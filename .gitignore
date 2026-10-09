@@ -6,3 +6,10 @@ dist/
 !.env.example
 *.log
 coverage/
+backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.cms-lock/
+*.staging-*/
+*.restore-*
