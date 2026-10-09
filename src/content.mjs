@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { moduleByKey } from './modules/registry.mjs';
+import { validateBlocks } from './blocks.mjs';
 
 export class HttpError extends Error {
   constructor(status,message) { super(message); this.status=status; }
@@ -24,15 +25,18 @@ export function validateContent(data) {
 }
 export function putContent(db,data,id) {
   const item=validateContent(data);
+  const blocks=validateBlocks(db,data.blocks??[]);
   if (id && !db.prepare('SELECT id FROM content WHERE id=?').get(id)) throw new HttpError(404,'محتوا پیدا نشد.');
   const duplicate=db.prepare('SELECT id FROM content WHERE kind=? AND slug=?').get(item.kind,item.slug);
   if (duplicate && duplicate.id!==id) throw new HttpError(409,'این آدرس قبلاً استفاده شده است.');
   const previous=id?db.prepare('SELECT updated_at FROM content WHERE id=?').get(id):null;
   const now=new Date(Math.max(Date.now(),previous?Date.parse(previous.updated_at)+1:0)).toISOString();
-  if (id) db.prepare('UPDATE content SET kind=?,title=?,slug=?,excerpt=?,body=?,status=?,seo_title=?,seo_description=?,updated_at=? WHERE id=?').run(item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,id);
-  else { id=randomUUID(); db.prepare('INSERT INTO content VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,now); }
-  return db.prepare('SELECT * FROM content WHERE id=?').get(id);
+  if (id) db.prepare('UPDATE content SET kind=?,title=?,slug=?,excerpt=?,body=?,status=?,seo_title=?,seo_description=?,updated_at=?,blocks=? WHERE id=?').run(item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,JSON.stringify(blocks),id);
+  else { id=randomUUID(); db.prepare('INSERT INTO content(id,kind,title,slug,excerpt,body,status,seo_title,seo_description,created_at,updated_at,blocks) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,now,JSON.stringify(blocks)); }
+  return serializeContent(db.prepare('SELECT * FROM content WHERE id=?').get(id));
 }
+export const serializeContent=item=>({...item,blocks:JSON.parse(item.blocks)});
+export const listContent=db=>db.prepare('SELECT * FROM content ORDER BY updated_at DESC').all().map(serializeContent);
 export function publishedContent(db,site) {
-  return db.prepare("SELECT * FROM content WHERE status='published' ORDER BY updated_at DESC").all().filter(item=>site.enabledModules.includes(item.kind));
+  return db.prepare("SELECT * FROM content WHERE status='published' ORDER BY updated_at DESC").all().filter(item=>site.enabledModules.includes(item.kind)).map(serializeContent);
 }

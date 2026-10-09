@@ -8,8 +8,27 @@ export function siteURL(value) {
 export function publicPath(path,base='') {
   return `${base}${path}`;
 }
-function layout({site,title,description,path,body,baseURL,basePath=''}) {
-  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}"><link rel="canonical" href="${escapeHTML(baseURL+path)}"><meta property="og:title" content="${escapeHTML(title)}"><meta property="og:description" content="${escapeHTML(description)}"><meta property="og:url" content="${escapeHTML(baseURL+path)}"><meta property="og:type" content="website"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css"></head><body><header><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a><span>طراحی و محتوای اختصاصی</span></header><main>${body}</main><footer>${escapeHTML(site.name)} · ساخته‌شده با Core CMS</footer></body></html>`;
+function layout({site,title,description,path,body,baseURL,basePath='',menu=[]}) {
+  const links=menu.map(link=>`<a href="${escapeHTML(basePath+link.path)}">${escapeHTML(link.label)}</a>`).join('');
+  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}"><link rel="canonical" href="${escapeHTML(baseURL+path)}"><meta property="og:title" content="${escapeHTML(title)}"><meta property="og:description" content="${escapeHTML(description)}"><meta property="og:url" content="${escapeHTML(baseURL+path)}"><meta property="og:type" content="website"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css"></head><body><header><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a>${links?`<nav aria-label="منوی اصلی">${links}</nav>`:'<span>طراحی و محتوای اختصاصی</span>'}</header><main>${body}</main><footer>${escapeHTML(site.name)} · ساخته‌شده با Core CMS</footer></body></html>`;
+}
+export function renderBlocks(item,options) {
+  if(!item.blocks?.length)return `<div class="prose">${escapeHTML(item.body)}</div>`;
+  return item.blocks.map(block=>{
+    if(block.type==='heading')return `<h${block.level}>${escapeHTML(block.text)}</h${block.level}>`;
+    if(block.type==='paragraph')return `<div class="prose block-paragraph">${escapeHTML(block.text)}</div>`;
+    if(block.type==='image') {
+      const image=options.media?.find(image=>image.id===block.mediaId);
+      if(!image)return '';
+      const path=`/media/${image.id}.${image.mime==='image/png'?'png':'jpg'}`;
+      return `<figure><img loading="lazy" decoding="async" src="${escapeHTML((options.basePath||'')+path)}" width="${image.width}" height="${image.height}" alt="${escapeHTML(block.alt||image.alt)}">${block.caption?`<figcaption>${escapeHTML(block.caption)}</figcaption>`:''}</figure>`;
+    }
+    if(block.type==='cta') {
+      const target=options.items?.find(target=>target.id===block.contentId);
+      return target?`<p><a class="cta" href="${escapeHTML((options.basePath||'')+contentPath(target))}">${escapeHTML(block.label)}</a></p>`:'';
+    }
+    return '';
+  }).join('');
 }
 export function renderHome(site,items,options) {
   const home=items.find(item=>item.kind==='pages' && item.slug==='home');
@@ -18,11 +37,11 @@ export function renderHome(site,items,options) {
     if (!group.length) return '';
     return `<section><h2>${module.label}</h2><div class="cards">${group.map(item=>`<a class="card" href="${escapeHTML(publicPath(contentPath(item),options.basePath))}"><small>${module.singular}</small><h3>${escapeHTML(item.title)}</h3><p>${escapeHTML(item.excerpt)}</p><span>مشاهده ←</span></a>`).join('')}</div></section>`;
   }).join('');
-  const intro=`<section class="hero"><small>وب‌سایت اختصاصی شما</small><h1>${escapeHTML(home?.title||site.name)}</h1><p>${escapeHTML(home?.excerpt||site.description)}</p>${home?.body?`<div class="prose">${escapeHTML(home.body)}</div>`:''}</section>`;
+  const intro=`<section class="hero"><small>وب‌سایت اختصاصی شما</small><h1>${escapeHTML(home?.title||site.name)}</h1><p>${escapeHTML(home?.excerpt||site.description)}</p>${home?renderBlocks(home,options):''}</section>`;
   return layout({site,title:home?.seo_title||home?.title||site.name,description:home?.seo_description||home?.excerpt||site.description,path:'/',body:intro+groups,...options});
 }
 export function renderContent(site,item,options) {
-  return layout({site,title:item.seo_title||item.title,description:item.seo_description||item.excerpt||site.description,path:contentPath(item),body:`<article class="article"><a class="back" href="${escapeHTML(options.basePath||'')}/">← صفحه اصلی</a><h1>${escapeHTML(item.title)}</h1><p class="lead">${escapeHTML(item.excerpt)}</p><div class="prose">${escapeHTML(item.body)}</div></article>`,...options});
+  return layout({site,title:item.seo_title||item.title,description:item.seo_description||item.excerpt||site.description,path:contentPath(item),body:`<article class="article"><a class="back" href="${escapeHTML(options.basePath||'')}/">← صفحه اصلی</a><h1>${escapeHTML(item.title)}</h1><p class="lead">${escapeHTML(item.excerpt)}</p>${renderBlocks(item,options)}</article>`,...options});
 }
 export function renderNotFound(site,options) {
   return layout({site,title:'صفحه پیدا نشد',description:'این صفحه در دسترس نیست.',path:'/404/',body:`<section class="hero"><h1>صفحه پیدا نشد</h1><a href="${escapeHTML(options.basePath||'')}/">بازگشت به صفحه اصلی</a></section>`,...options});

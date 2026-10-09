@@ -24,7 +24,8 @@ export async function createUser(db, { email, password, role='admin' }) {
   if (!['admin','editor'].includes(role)) throw new Error('Invalid role');
   const hash = await hashPassword(password);
   const id = randomUUID();
-  db.prepare('INSERT INTO users VALUES(?,?,?,?,?)').run(id,email,hash,role,new Date().toISOString());
+  const now=new Date().toISOString();
+  db.prepare('INSERT INTO users(id,email,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(id,email,hash,role,now,now);
   return { id,email,role };
 }
 export function createSession(db,userId) {
@@ -32,13 +33,13 @@ export function createSession(db,userId) {
   const csrf = randomBytes(32).toString('hex');
   const expires = Date.now() + 8 * 60 * 60 * 1000;
   db.prepare('DELETE FROM sessions WHERE expires_at<=?').run(Date.now());
-  db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(digest(token),userId,csrf,expires);
+  db.prepare('INSERT INTO sessions(token_hash,user_id,csrf,expires_at,session_id,created_at) VALUES(?,?,?,?,?,?)').run(digest(token),userId,csrf,expires,randomUUID(),Date.now());
   return { token,csrf,expires };
 }
 export function getSession(db, req) {
   const token = (req.headers.cookie || '').split(';').map(part=>part.trim()).find(part=>part.startsWith('cms_session='))?.slice(12);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const row = db.prepare('SELECT s.*, u.email, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>?').get(digest(token),Date.now());
+  const row = db.prepare('SELECT s.*, u.email, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
   return row ? { ...row, token } : null;
 }
 export function cookie(token,secure=false,clear=false) {
