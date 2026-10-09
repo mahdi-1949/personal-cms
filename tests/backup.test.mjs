@@ -33,7 +33,7 @@ async function fixture(t){
 
 test('complete backup restores content, categories, redirects, inbox, passwords and images; sessions are revoked',async t=>{
   const f=await fixture(t);const hash=f.app.db.prepare('SELECT password_hash FROM users').get().password_hash;await f.app.close();
-  const result=await createBackup(f);assert.equal(result.files,2);const manifest=await verifyBackup(f.outputDir);assert.equal(manifest.schemaVersion,4);
+  const result=await createBackup(f);assert.equal(result.files,2);const manifest=await verifyBackup(f.outputDir);assert.equal(manifest.schemaVersion,5);
   const source=openDatabase(f.dbPath);assert.equal(source.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,1);source.close();
   const restoredPath=join(f.dir,'recovered/cms.sqlite');const restored=await restoreBackup({inputDir:f.outputDir,dbPath:restoredPath});
   const app=await createApp({dbPath:restored.database,mediaDir:restored.media,origin:'http://cms.test'});t.after(()=>app.close());
@@ -55,7 +55,7 @@ test('managed database locks reject live backups and concurrent server aliases a
   await assert.rejects(createBackup(f),/data is locked/);await assert.rejects(createApp({dbPath:f.dbPath}),/data is locked/);
   const alias=join(f.dir,'alias.sqlite');await symlink(f.dbPath,alias);
   await assert.rejects(createApp({dbPath:alias}),/data is locked/);
-  await f.app.close();await createBackup(f);assert.equal((await verifyBackup(f.outputDir )).schemaVersion,4);
+  await f.app.close();await createBackup(f);assert.equal((await verifyBackup(f.outputDir )).schemaVersion,5);
 });
 
 test('damaged backup bytes and invalid SQLite are rejected before any restore destination is installed',async t=>{
@@ -99,12 +99,12 @@ test('restore never overwrites an existing database or media directory',async t=
 
 test('v0.2 backup is verified and upgraded during restore; existing contact content is preserved',async t=>{
   const f=await fixture(t);await f.app.close();const db=openDatabase(f.dbPath);
-  db.exec('DROP TABLE recovery_codes; DROP TABLE password_resets; DROP TABLE mail_outbox; DROP TABLE audit_log; ALTER TABLE users DROP COLUMN mfa_secret; ALTER TABLE users DROP COLUMN mfa_pending_secret; ALTER TABLE users DROP COLUMN mfa_pending_expires; ALTER TABLE users DROP COLUMN mfa_last_step; DROP TABLE contact_limits; DROP TABLE contact_tokens; DROP TABLE messages; DROP TABLE redirects; DROP TABLE content_categories; DROP TABLE categories; DELETE FROM schema_versions WHERE version>=3;');
+  db.exec('ALTER TABLE content DROP COLUMN template; DROP TABLE recovery_codes; DROP TABLE password_resets; DROP TABLE mail_outbox; DROP TABLE audit_log; ALTER TABLE users DROP COLUMN mfa_secret; ALTER TABLE users DROP COLUMN mfa_pending_secret; ALTER TABLE users DROP COLUMN mfa_pending_expires; ALTER TABLE users DROP COLUMN mfa_last_step; DROP TABLE contact_limits; DROP TABLE contact_tokens; DROP TABLE messages; DROP TABLE redirects; DROP TABLE content_categories; DROP TABLE categories; DELETE FROM schema_versions WHERE version>=3;');
   db.prepare("UPDATE content SET kind='pages',slug='contact',blocks='[]' WHERE id=?").run(f.item.id);db.close();
   await createBackup(f);assert.equal((await verifyBackup(f.outputDir)).schemaVersion,2);
   const result=await restoreBackup({inputDir:f.outputDir,dbPath:join(f.dir,'legacy-restored/cms.sqlite')});
   const app=await createApp({dbPath:result.database,origin:'http://cms.test'});t.after(()=>app.close());
-  assert.equal(app.db.prepare('SELECT MAX(version) AS n FROM schema_versions').get().n,4);assert.equal(listContent(app.db)[0].slug,'contact');assert.equal(getSite(app.db).contactEnabled,false);
+  assert.equal(app.db.prepare('SELECT MAX(version) AS n FROM schema_versions').get().n,5);assert.equal(listContent(app.db)[0].slug,'contact');assert.equal(getSite(app.db).contactEnabled,false);
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${app.server.address().port}`;
   assert.equal((await fetch(`${base}/contact/`)).status,200);
   const session=createSession(app.db,f.user.id);const response=await fetch(`${base}/api/settings`,{method:'PUT',headers:{Origin:'http://cms.test','Content-Type':'application/json',Cookie:`cms_session=${session.token}`,'X-CSRF-Token':session.csrf},body:JSON.stringify({...getSite(app.db),contactEnabled:true})});assert.equal(response.status,409);

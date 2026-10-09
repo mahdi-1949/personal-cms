@@ -9,6 +9,7 @@ import { publicMenu,referencedMedia } from './blocks.mjs';
 import { listMedia,mediaPath } from './media.mjs';
 import { publicCategories,categoryPath } from './categories.mjs';
 import { publicRedirects } from './redirects.mjs';
+import { themeCSS } from './templates.mjs';
 import { siteURL,renderHome,renderContent,renderCategory,renderRedirect,renderNotFound,sitemap } from './render.mjs';
 export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirname(resolve(dbPath)),'media')}) {
   const output=resolve(outputDir);const database=resolve(dbPath);const within=relative(output,database);
@@ -36,10 +37,11 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
     for(const category of categories){const folder=join(staging,categoryPath(category).slice(1));await mkdir(folder,{recursive:true});await writeFile(join(folder,'index.html'),renderCategory(staticSite,category,items,options));}
     for(const alias of redirects){const folder=join(staging,alias.path.slice(1));await mkdir(folder,{recursive:true});await writeFile(join(folder,'index.html'),renderRedirect(alias.destination,basePath));}
     await writeFile(join(staging,'assets/site.css'),await readFile(fileURLToPath(new URL('../public/site.css',import.meta.url))));
+    await writeFile(join(staging,'assets/theme.css'),themeCSS(site.theme));
     await writeFile(join(staging,'sitemap.xml'),sitemap(items,baseURL,categories.map(categoryPath)));
     await writeFile(join(staging,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${baseURL}/sitemap.xml\n`);
     await writeFile(join(staging,'.nojekyll'),'');
-    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.3.0',exportedAt:new Date().toISOString()}));
+    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.5.0',exportedAt:new Date().toISOString()}));
     if(exists){const previous=`${output}.previous-${randomUUID()}`;await rename(output,previous);try{await rename(staging,output);}catch(error){await rename(previous,output);throw error;}await rm(previous,{recursive:true});}
     else await rename(staging,output);
     return {output,count:items.length,warnings:site.contactEnabled?['Contact form is excluded from static export; it requires the Node.js backend.']:[]};

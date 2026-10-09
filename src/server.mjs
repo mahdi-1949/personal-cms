@@ -7,7 +7,7 @@ import { openDatabase,getSite,saveSite } from './database.mjs';
 import { getSession,createSession,verifyPassword,hashPassword,cookie,digest,rateLimited } from './auth.mjs';
 import { HttpError,putContent,publishedContent,listContent } from './content.mjs';
 import { listUsers,addUser,updateUser,changePassword,listSessions } from './users.mjs';
-import { getMenu,putMenu,publicMenu,referencedMedia } from './blocks.mjs';
+import { getMenu,putMenu,publicMenu,referencedMedia,publicBlocks } from './blocks.mjs';
 import { MAX_IMAGE_BYTES,listMedia,uploadMedia,updateMedia,deleteMedia,loadMedia } from './media.mjs';
 import { modules,moduleByKey,contentPath } from './modules/registry.mjs';
 import { renderHome,renderContent,renderCategory,renderContact,renderNotFound,sitemap,siteURL } from './render.mjs';
@@ -20,6 +20,7 @@ import { consumeFactor,assertSecurityKey,mfaStatus,startMfa,confirmMfa,changeMfa
 import { smtpMailer,mailWorker,enqueueMail,cancelResets } from './mail.mjs';
 import { recordAudit,listAudit,mutationEvent } from './audit.mjs';
 import { proxyList,clientIP } from './proxy.mjs';
+import { siteTemplates,pageTemplates,defaultPageTemplate,validateTheme,themeCSS } from './templates.mjs';
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 
 function respond(res,status,body,type='application/json; charset=utf-8',extra={}) {
@@ -67,7 +68,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       const url=new URL(req.url,origin);const path=url.pathname;const method=req.method==='HEAD'?'GET':req.method;res.cmsHead=req.method==='HEAD';
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method)) throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
       if(['POST','PUT','DELETE'].includes(method) && req.headers.origin!==origin) throw new HttpError(403,'مبدأ درخواست معتبر نیست.');
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.4.0'});
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.5.0'});
       if(path==='/api/auth/options' && method==='GET')return respond(res,200,{passwordRecovery:Boolean(mailer&&key)});
       if(path==='/api/auth/forgot-password' && method==='POST') {
         if(!mailer || !key)throw new HttpError(503,'بازیابی رمز در حال حاضر در دسترس نیست.');
@@ -121,8 +122,8 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       }
       if(path==='/api/public/content'  && method==='GET') {
         const site=getSite(db);const items=publishedContent(db,site);const publicIds=new Set(items.map(item=>item.id));
-        const content=items.map(item=>({...item,blocks:item.blocks.filter(block=>block.type!=='cta' || publicIds.has(block.contentId))}));
-        return respond(res,200,{site:{name:site.name,description:site.description,contactEnabled:site.contactEnabled},content,menu:publicMenu(db,items),categories:publicCategories(db,items)});
+        const content=items.map(item=>({...item,blocks:publicBlocks(item.blocks,publicIds)}));
+        return respond(res,200,{site:{name:site.name,description:site.description,contactEnabled:site.contactEnabled,theme:site.theme},content,menu:publicMenu(db,items),categories:publicCategories(db,items)});
       }
       if(path.startsWith('/api/')) {
         const session=requireSession(db,req);
@@ -222,6 +223,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند تصویر را حذف کند.');
           await deleteMedia(db,mediaDir,mediaMatch[1],await readBody(req));return respond(res,200,{ok:true});
         }
+        if(path==='/api/templates' && method==='GET')return respond(res,200,{siteTemplates,pageTemplates,defaults:Object.fromEntries(modules.map(item=>[item.key,defaultPageTemplate(item.key)]))});
         if(path==='/api/modules' && method==='GET') return respond(res,200,{modules,enabled:getSite(db).enabledModules});
         if(path==='/api/settings' && method==='GET') return respond(res,200,getSite(db));
         if(path==='/api/settings' && method==='PUT') {
@@ -231,12 +233,24 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           const contactEnabled=data.contactEnabled===undefined?getSite(db).contactEnabled:data.contactEnabled;
           if(typeof contactEnabled!=='boolean')throw new HttpError(422,'وضعیت فرم تماس معتبر نیست.');
           if(contactEnabled && db.prepare("SELECT id FROM content WHERE kind='pages' AND slug='contact'").get())throw new HttpError(409,'صفحه قدیمی با آدرس contact وجود دارد؛ پیش از فعال‌سازی، آدرس آن را تغییر دهید.');
-          const site={name:data.name.trim(),description:data.description.trim(),contactEnabled,enabledModules:[...new Set(['pages',...data.enabledModules])]};saveSite(db,site);return respond(res,200,site);
+          const previous=getSite(db),theme=validateTheme(data.theme??previous.theme);
+          const changed=JSON.stringify(theme)!==JSON.stringify(previous.theme);
+          if(changed && data.theme_updated_at!==previous.theme_updated_at)throw new HttpError(409,'قالب در جلسه دیگری تغییر کرده؛ تنظیمات را تازه کنید.');
+          const theme_updated_at=changed?new Date(Math.max(Date.now(),Date.parse(previous.theme_updated_at||0)+1)).toISOString():previous.theme_updated_at;
+          const site={theme,theme_updated_at,name:data.name.trim(),description:data.description.trim(),contactEnabled,enabledModules:[...new Set(['pages',...data.enabledModules])]};saveSite(db,site);return respond(res,200,site);
         }
         if(path==='/api/content' && method==='GET') return respond(res,200,{content:listContent(db)});
         if(path==='/api/content' && method==='POST') {
           const data=await readBody(req);if(!getSite(db).enabledModules.includes(data.kind)) throw new HttpError(422,'این ماژول غیرفعال است.');
           return respond(res,201,putContent(db,data));
+        }
+        const previewMatch=path.match(/^\/api\/content\/([a-f0-9-]{36})\/preview$/);
+        if(previewMatch && method==='GET') {
+          const site=getSite(db),item=listContent(db).find(item=>item.id===previewMatch[1]);
+          if(!item || !site.enabledModules.includes(item.kind))throw new HttpError(404,'صفحه پیش‌نمایش پیدا نشد.');
+          const items=publishedContent(db,site),options={baseURL,basePath:'',items,categories:publicCategories(db,items),menu:publicMenu(db,items),media:listMedia(db),preview:true};
+          res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+          return respond(res,200,item.kind==='pages' && item.slug==='home'?renderHome(site,[...items.filter(current=>current.id!==item.id),item],options):renderContent(site,item,options),'text/html; charset=utf-8');
         }
         const match=path.match(/^\/api\/content\/([a-f0-9-]{36})$/);
         if(match && method==='PUT') {
@@ -257,7 +271,8 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         throw new HttpError(404,'مسیر پیدا نشد.');
       }
       if(method!=='GET') throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
-      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
+      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/assets/templates.js':'templates.js','/assets/section-editor.js':'section-editor.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
+      if(path==='/assets/theme.css')return respond(res,200,themeCSS(getSite(db).theme),'text/css; charset=utf-8');
       if(assets[path]) {
         if(path.startsWith('/admin/reset-password'))res.setHeader('Referrer-Policy','no-referrer');
         const file=assets[path];const types={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};

@@ -62,7 +62,7 @@ export async function createBackup({dbPath,outputDir,mediaDir=join(dirname(resol
       await copyFile(source,target);await chmod(target,0o600);files[item.path]=await fingerprint(target);
       if(files[item.path].sha256!==fingerprintBefore.sha256)throw new Error('Media changed during backup');
     }
-    const manifest={format:FORMAT,cmsVersion:'0.4.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
+    const manifest={format:FORMAT,cmsVersion:'0.5.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
     await writeFile(join(staging,'manifest.json'),JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600});
     await verifyBackup(staging);if(await exists(output))throw new Error('Backup destination was created during backup');
     await rename(staging,output);return {output,files:Object.keys(files).length};
