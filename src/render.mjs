@@ -1,5 +1,6 @@
 import { modules, contentPath } from './modules/registry.mjs';
 import { categoryPath } from './categories.mjs';
+import { defaultTheme,validateTheme } from './templates.mjs';
 export const escapeHTML = value => String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 export function siteURL(value) {
   const url=new URL(value);
@@ -9,9 +10,21 @@ export function siteURL(value) {
 export function publicPath(path,base='') {
   return `${base}${path}`;
 }
-function layout({site,title,description,path,body,baseURL,basePath='',menu=[],scripts=[]}) {
+function layout({site,title,description,path,body,baseURL,basePath='',menu=[],scripts=[],preview=false}) {
+  const theme=validateTheme(site.theme||defaultTheme);
   const links=[...menu,...(site.contactEnabled?[{path:'/contact/',label:'تماس با ما'}]:[])].map(link=>`<a href="${escapeHTML(basePath+link.path)}">${escapeHTML(link.label)}</a>`).join('');
-  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}"><link rel="canonical" href="${escapeHTML(baseURL+path)}"><meta property="og:title" content="${escapeHTML(title)}"><meta property="og:description" content="${escapeHTML(description)}"><meta property="og:url" content="${escapeHTML(baseURL+path)}"><meta property="og:type" content="website"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css">${scripts.map(script=>`<script type="module" src="${escapeHTML(basePath+script)}"></script>`).join('')}</head><body><header><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a>${links?`<nav aria-label="منوی اصلی">${links}</nav>`:'<span>طراحی و محتوای اختصاصی</span>'}</header><main>${body}</main><footer>${escapeHTML(site.name)} · ساخته‌شده با Core CMS</footer></body></html>`;
+  const meta=preview?'<meta name="robots" content="noindex,nofollow,noarchive">':`<link rel="canonical" href="${escapeHTML(baseURL+path)}"><meta property="og:title" content="${escapeHTML(title)}"><meta property="og:description" content="${escapeHTML(description)}"><meta property="og:url" content="${escapeHTML(baseURL+path)}"><meta property="og:type" content="website">`;
+  const banner=preview?'<div class="preview-banner" role="status">پیش‌نمایش خصوصی آخرین نسخه ذخیره‌شده؛ این نمایش وضعیت انتشار صفحه را تغییر نمی‌دهد.</div>':'';
+  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}">${meta}<link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/theme.css">${scripts.map(script=>`<script type="module" src="${escapeHTML(basePath+script)}"></script>`).join('')}</head><body class="site-template-${theme.template}"><a class="skip-link" href="#main-content">رفتن به محتوای اصلی</a>${banner}<header class="site-header"><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a>${links?`<nav aria-label="منوی اصلی">${links}</nav>`:''}</header><main id="main-content">${body}</main><footer>${escapeHTML(site.name)}</footer></body></html>`;
+}
+function imageHTML(mediaId,alt,options,{eager=false}={}) {
+  const image=options.media?.find(image=>image.id===mediaId);if(!image)return '';
+  const path=`/media/${image.id}.${image.mime==='image/png'?'png':'jpg'}`;
+  return `<img loading="${eager?'eager':'lazy'}" decoding="async" src="${escapeHTML((options.basePath||'')+path)}" width="${image.width}" height="${image.height}" alt="${escapeHTML(alt||image.alt)}">`;
+}
+function buttonHTML(contentId,label,options) {
+  const target=options.items?.find(item=>item.id===contentId);
+  return target?`<a class="cta" href="${escapeHTML((options.basePath||'')+contentPath(target))}">${escapeHTML(label)}</a>`:'';
 }
 export function renderBlocks(item,options) {
   if(!item.blocks?.length)return `<div class="prose">${escapeHTML(item.body)}</div>`;
@@ -19,15 +32,16 @@ export function renderBlocks(item,options) {
     if(block.type==='heading')return `<h${block.level}>${escapeHTML(block.text)}</h${block.level}>`;
     if(block.type==='paragraph')return `<div class="prose block-paragraph">${escapeHTML(block.text)}</div>`;
     if(block.type==='image') {
-      const image=options.media?.find(image=>image.id===block.mediaId);
-      if(!image)return '';
-      const path=`/media/${image.id}.${image.mime==='image/png'?'png':'jpg'}`;
-      return `<figure><img loading="lazy" decoding="async" src="${escapeHTML((options.basePath||'')+path)}" width="${image.width}" height="${image.height}" alt="${escapeHTML(block.alt||image.alt)}">${block.caption?`<figcaption>${escapeHTML(block.caption)}</figcaption>`:''}</figure>`;
+      const image=imageHTML(block.mediaId,block.alt,options);if(!image)return '';
+      return `<figure>${image}${block.caption?`<figcaption>${escapeHTML(block.caption)}</figcaption>`:''}</figure>`;
     }
-    if(block.type==='cta') {
-      const target=options.items?.find(target=>target.id===block.contentId);
-      return target?`<p><a class="cta" href="${escapeHTML((options.basePath||'')+contentPath(target))}">${escapeHTML(block.label)}</a></p>`:'';
+    if(block.type==='cta')return `<p>${buttonHTML(block.contentId,block.label,options)}</p>`;
+    if(block.type==='hero') {
+      const image=imageHTML(block.mediaId,block.alt,options);
+      return `<section class="section-hero section-hero-${block.variant}${image?' has-image':''}"><div><h2>${escapeHTML(block.title)}</h2><p class="prose">${escapeHTML(block.text)}</p>${buttonHTML(block.contentId,block.label,options)}</div>${image?`<figure>${image}</figure>`:''}</section>`;
     }
+    if(block.type==='cards')return `<section class="section-cards">${block.title?`<h2>${escapeHTML(block.title)}</h2>`:''}<div class="cards cards-${block.variant}">${block.items.map(card=>`<article class="card">${imageHTML(card.mediaId,card.alt,options)}<h3>${escapeHTML(card.title)}</h3><p class="prose">${escapeHTML(card.text)}</p>${buttonHTML(card.contentId,'مشاهده',options)}</article>`).join('')}</div></section>`;
+    if(block.type==='faq')return `<section class="section-faq">${block.title?`<h2>${escapeHTML(block.title)}</h2>`:''}${block.items.map(item=>`<details><summary>${escapeHTML(item.question)}</summary><div class="prose">${escapeHTML(item.answer)}</div></details>`).join('')}</section>`;
     return '';
   }).join('');
 }
@@ -38,12 +52,16 @@ export function renderHome(site,items,options) {
     if (!group.length) return '';
     return `<section><h2>${module.label}</h2><div class="cards">${group.map(item=>`<a class="card" href="${escapeHTML(publicPath(contentPath(item),options.basePath))}"><small>${module.singular}</small><h3>${escapeHTML(item.title)}</h3><p>${escapeHTML(item.excerpt)}</p><span>مشاهده ←</span></a>`).join('')}</div></section>`;
   }).join('');
-  const intro=`<section class="hero"><small>وب‌سایت اختصاصی شما</small><h1>${escapeHTML(home?.title||site.name)}</h1><p>${escapeHTML(home?.excerpt||site.description)}</p>${home?renderBlocks(home,options):''}</section>`;
+  const intro=`<section class="home-intro page-template-${escapeHTML(home?.template||'standard')}"><div class="hero page-intro"><h1>${escapeHTML(home?.title||site.name)}</h1><p class="lead">${escapeHTML(home?.excerpt||site.description)}</p></div>${home?`<div class="page-body">${renderBlocks(home,options)}</div>`:''}</section>`;
   return layout({site,title:home?.seo_title||home?.title||site.name,description:home?.seo_description||home?.excerpt||site.description,path:'/',body:intro+groups,...options});
 }
 export function renderContent(site,item,options) {
   const categories=(options.categories||[]).filter(category=>item.categoryIds?.includes(category.id)).map(category=>`<a href="${escapeHTML((options.basePath||'')+categoryPath(category))}">${escapeHTML(category.name)}</a>`).join(' · ');
-  return layout({site,title:item.seo_title||item.title,description:item.seo_description||item.excerpt||site.description,path:contentPath(item),body:`<article class="article"><a class="back" href="${escapeHTML(options.basePath||'')}/">← صفحه اصلی</a><h1>${escapeHTML(item.title)}</h1><p class="lead">${escapeHTML(item.excerpt)}</p>${categories?`<nav class="categories" aria-label="دسته‌های مقاله">${categories}</nav>`:''}${renderBlocks(item,options)}</article>`,...options});
+  const template=item.template||'standard';
+  const metadata=template==='article'?`<p class="article-date">آخرین ویرایش: <time datetime="${escapeHTML(item.updated_at)}">${escapeHTML(new Date(item.updated_at).toLocaleDateString('fa-IR'))}</time></p>`:'';
+  const heading=`<div class="page-intro"><a class="back" href="${escapeHTML(options.basePath||'')}/">← صفحه اصلی</a><h1>${escapeHTML(item.title)}</h1><p class="lead">${escapeHTML(item.excerpt)}</p>${metadata}${categories?`<nav class="categories" aria-label="دسته‌های مقاله">${categories}</nav>`:''}</div>`;
+  const body=`<article class="article page-template-${escapeHTML(template)}">${heading}<div class="page-body">${renderBlocks(item,options)}</div></article>`;
+  return layout({site,title:item.seo_title||item.title,description:item.seo_description||item.excerpt||site.description,path:contentPath(item),body,...options});
 }
 export function renderCategory(site,category,items,options) {
   const posts=items.filter(item=>item.kind==='posts' && item.categoryIds.includes(category.id));

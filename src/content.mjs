@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { moduleByKey } from './modules/registry.mjs';
 import { validateBlocks } from './blocks.mjs';
+import { validatePageTemplate } from './templates.mjs';
 import { categoryIds,validateCategoryIds } from './categories.mjs';
 import { contentPath } from './modules/registry.mjs';
 import { rememberRedirect } from './redirects.mjs';
@@ -31,6 +32,7 @@ export function putContent(db,data,id) {
   const blocks=validateBlocks(db,data.blocks??[]);
   const old=id?db.prepare('SELECT * FROM content WHERE id=?').get(id):null;
   if(id && !old)throw new HttpError(404,'محتوا پیدا نشد.');
+  const template=validatePageTemplate(item.kind,data.template??old?.template);
   const ids=validateCategoryIds(db,item.kind,data.categoryIds??(old?categoryIds(db,id):[]));
   const duplicate=db.prepare('SELECT id FROM content WHERE kind=? AND slug=?').get(item.kind,item.slug);
   if(duplicate && duplicate.id!==id)throw new HttpError(409,'این آدرس قبلاً استفاده شده است.');
@@ -40,8 +42,8 @@ export function putContent(db,data,id) {
   db.exec('BEGIN IMMEDIATE');
   try {
     if(alias)db.prepare('DELETE FROM redirects WHERE id=?').run(alias.id);
-    if(id)db.prepare('UPDATE content SET kind=?,title=?,slug=?,excerpt=?,body=?,status=?,seo_title=?,seo_description=?,updated_at=?,blocks=? WHERE id=?').run(item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,JSON.stringify(blocks),id);
-    else {id=randomUUID();db.prepare('INSERT INTO content(id,kind,title,slug,excerpt,body,status,seo_title,seo_description,created_at,updated_at,blocks) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,now,JSON.stringify(blocks));}
+    if(id)db.prepare('UPDATE content SET kind=?,title=?,slug=?,excerpt=?,body=?,status=?,seo_title=?,seo_description=?,updated_at=?,blocks=?,template=? WHERE id=?').run(item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,JSON.stringify(blocks),template,id);
+    else {id=randomUUID();db.prepare('INSERT INTO content(id,kind,title,slug,excerpt,body,status,seo_title,seo_description,created_at,updated_at,blocks,template) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,now,JSON.stringify(blocks),template);}
     db.prepare('DELETE FROM content_categories WHERE content_id=?').run(id);
     for(const categoryId of ids)db.prepare('INSERT INTO content_categories VALUES(?,?)').run(id,categoryId);
     if(old && old.status==='published' && contentPath(old)!==contentPath(item))rememberRedirect(db,contentPath(old),{contentId:id});

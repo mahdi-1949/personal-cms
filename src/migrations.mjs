@@ -56,6 +56,12 @@ const migrations = [
       CREATE INDEX audit_date ON audit_log(created_at,id);
     `);
   }},
+  { version:5, apply(db) {
+    db.exec("ALTER TABLE content ADD COLUMN template TEXT NOT NULL DEFAULT 'standard'; UPDATE content SET template=CASE kind WHEN 'posts' THEN 'article' WHEN 'portfolio' THEN 'case-study' WHEN 'services' THEN 'landing' ELSE 'standard' END;");
+    const site=JSON.parse(db.prepare("SELECT value FROM settings WHERE key='site'").get().value);
+    site.theme={template:'corporate',primaryColor:'#245c73',corners:'rounded'};site.theme_updated_at=new Date().toISOString();
+    db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
+  }},
 ];
 
 export const SCHEMA_VERSION=migrations.at(-1).version;

@@ -1,8 +1,10 @@
+import { createSectionEditor } from './section-editor.js';
 export function createAuthoring({state,api,esc,toast,load,showLogin,heading,number}) {
   const $=selector=>document.querySelector(selector);
   const imageURL=image=>`/media/${image.id}.${image.mime==='image/png'?'png':'jpg'}`;
   const contentOptions=selected=>'<option value="">انتخاب صفحه</option>'+state.content.filter(item=>state.site.enabledModules.includes(item.kind)).map(item=>`<option value="${esc(item.id)}" ${selected===item.id?'selected':''}>${esc(item.title)}${item.status==='draft'?' (پیش‌نویس)':''}</option>`).join('');
   const mediaOptions=selected=>'<option value="">انتخاب تصویر</option>'+state.media.map(item=>`<option value="${esc(item.id)}" ${selected===item.id?'selected':''}>${esc(item.filename)}</option>`).join('');
+  const sections=createSectionEditor({esc,toast,contentOptions,mediaOptions});
   let blocks=[];let menu=[];
   function readBlocks(){
     blocks=[...$('#block-list').querySelectorAll('[data-block]')].map(row=>{
@@ -10,27 +12,30 @@ export function createAuthoring({state,api,esc,toast,load,showLogin,heading,numb
       if(type==='heading')return {type,text:val('text'),level:Number(val('level'))};
       if(type==='paragraph')return {type,text:val('text')};
       if(type==='image')return {type,mediaId:val('mediaId'),alt:val('alt'),caption:val('caption')};
+      if(['hero','cards','faq'].includes(type))return sections.collect(row);
       return {type,label:val('label'),contentId:val('contentId')};
     });return blocks;
   }
   function renderBlocks(){
     $('#block-list').innerHTML=blocks.map((block,index)=>{
-      const labels={heading:'عنوان',paragraph:'متن',image:'تصویر',cta:'دکمه'};
+      const labels={heading:'عنوان',paragraph:'متن',image:'تصویر',cta:'دکمه',hero:'معرفی',cards:'کارت‌ها',faq:'پرسش‌های متداول'};
       let fields;
       if(block.type==='heading')fields=`<label>عنوان<input data-field="text" value="${esc(block.text)}" maxlength="200" required></label><label>سطح عنوان<select data-field="level"><option value="2" ${block.level===2?'selected':''}>عنوان اصلی بخش</option><option value="3" ${block.level===3?'selected':''}>زیرعنوان</option></select></label>`;
       if(block.type==='paragraph')fields=`<label>متن<textarea data-field="text" maxlength="10000" rows="4" required>${esc(block.text)}</textarea></label>`;
       if(block.type==='image')fields=`<label>تصویر<select data-field="mediaId" required>${mediaOptions(block.mediaId)}</select></label><label>متن جایگزین<input data-field="alt" value="${esc(block.alt)}" maxlength="500"></label><label>توضیح زیر تصویر<input data-field="caption" value="${esc(block.caption)}" maxlength="500"></label>`;
       if(block.type==='cta')fields=`<label>متن دکمه<input data-field="label" value="${esc(block.label)}" maxlength="100" required></label><label>صفحه مقصد<select data-field="contentId" required>${contentOptions(block.contentId)}</select></label>`;
+      if(['hero','cards','faq'].includes(block.type))fields=sections.fields(block);
       return `<section class="block-card" data-block="${index}" data-type="${esc(block.type)}"><div class="block-heading"><strong>${labels[block.type]} · ${number(index+1)}</strong><div><button type="button" class="ghost" data-move="${index}" data-direction="-1" aria-label="انتقال بلوک به بالا" ${index===0?'disabled':''}>↑</button><button type="button" class="ghost" data-move="${index}" data-direction="1" aria-label="انتقال بلوک به پایین" ${index===blocks.length-1?'disabled':''}>↓</button><button type="button" class="ghost danger" data-remove="${index}">حذف</button></div></div>${fields}</section>`;
     }).join('');
     $('#block-list').querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{readBlocks();blocks.splice(Number(button.dataset.remove),1);renderBlocks();});
     $('#block-list').querySelectorAll('[data-move]').forEach(button=>button.onclick=()=>{readBlocks();const i=Number(button.dataset.move),j=i+Number(button.dataset.direction);[blocks[i],blocks[j]]=[blocks[j],blocks[i]];renderBlocks();});
+    sections.bind($('#block-list'),readBlocks,renderBlocks);
     $('#plain-body').hidden=blocks.length>0;$('#blocks-help').textContent=blocks.length?'محتوای صفحه از بلوک‌های زیر ساخته می‌شود.':'متن صفحه را بنویسید یا بلوک اضافه کنید.';
   }
   $('#block-tools').querySelectorAll('[data-add-block]').forEach(button=>button.onclick=()=>{
     readBlocks();if(blocks.length>=40){toast('حداکثر ۴۰ بلوک مجاز است.');return;}
     const type=button.dataset.addBlock;
-    blocks.push(type==='heading'?{type,text:'',level:2}:type==='paragraph'?{type,text:''}:type==='image'?{type,mediaId:'',alt:'',caption:''}:{type,label:'',contentId:''});renderBlocks();
+    blocks.push(['hero','cards','faq'].includes(type)?sections.blank(type):type==='heading'?{type,text:'',level:2}:type==='paragraph'?{type,text:''}:type==='image'?{type,mediaId:'',alt:'',caption:''}:{type,label:'',contentId:''});renderBlocks();
   });
 
   const userDialog=document.createElement('dialog');userDialog.id='user-dialog';

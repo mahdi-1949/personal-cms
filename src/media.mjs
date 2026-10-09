@@ -3,6 +3,7 @@ import { mkdir,writeFile,unlink,readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HttpError,listContent } from './content.mjs';
 import { processImage } from './image-processing.mjs';
+import { referencedMedia } from './blocks.mjs';
 
 export const MAX_IMAGE_BYTES=5*1024*1024;
 export const mediaPath=(dir,item)=>join(dir,`${item.id}.${item.mime==='image/png'?'png':'jpg'}`);
@@ -34,7 +35,7 @@ export async function deleteMedia(db,dir,id,data) {
   const item=db.prepare('SELECT * FROM media WHERE id=?').get(id);
   if(!item)throw new HttpError(404,'تصویر پیدا نشد.');
   if(data.expected_updated_at!==item.updated_at)throw new HttpError(409,'تصویر تغییر کرده؛ فهرست را تازه کنید.');
-  if(listContent(db).some(content=>content.blocks.some(block=>block.type==='image' && block.mediaId===id)))throw new HttpError(409,'تصویر در محتوا استفاده شده؛ ابتدا بلوک تصویر را حذف کنید.');
+  if(referencedMedia(listContent(db)).includes(id))throw new HttpError(409,'تصویر در محتوا استفاده شده؛ ابتدا بلوک تصویر را حذف کنید.');
   // Remove the DB record synchronously so no concurrent edit can add a reference while unlink awaits.
   db.prepare('DELETE FROM media WHERE id=?').run(id);
   try{await unlink(mediaPath(dir,item));}catch(error){if(error.code!=='ENOENT')throw error;}
