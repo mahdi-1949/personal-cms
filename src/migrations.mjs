@@ -43,6 +43,19 @@ const migrations = [
     site.contactEnabled=false;
     db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
   }},
+  { version:4, apply(db) {
+    db.exec(`
+      ALTER TABLE users ADD COLUMN mfa_secret TEXT;
+      ALTER TABLE users ADD COLUMN mfa_pending_secret TEXT;
+      ALTER TABLE users ADD COLUMN mfa_pending_expires INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE users ADD COLUMN mfa_last_step INTEGER NOT NULL DEFAULT -1;
+      CREATE TABLE recovery_codes (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash TEXT NOT NULL, PRIMARY KEY(user_id,code_hash));
+      CREATE TABLE password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE, user_version TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE mail_outbox (id TEXT PRIMARY KEY, kind TEXT NOT NULL, entity_id TEXT, payload TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('waiting','failed')));
+      CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, actor_id TEXT, target_id TEXT, ip_hash TEXT, created_at TEXT NOT NULL);
+      CREATE INDEX audit_date ON audit_log(created_at,id);
+    `);
+  }},
 ];
 
 export const SCHEMA_VERSION=migrations.at(-1).version;

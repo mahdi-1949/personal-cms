@@ -15,9 +15,15 @@ import { listCategories,putCategory,publicCategories,categoryPath } from './cate
 import { listRedirects,putRedirect,publicRedirects } from './redirects.mjs';
 import { contactLimit,issueContactToken,submitContact,listMessages,updateMessage } from './contact.mjs';
 import { acquireDataLock } from './data-lock.mjs';
+import { securityKey as parseSecurityKey } from './security-crypto.mjs';
+import { consumeFactor,assertSecurityKey,mfaStatus,startMfa,confirmMfa,changeMfa,issueReset,resetPassword } from './account-security.mjs';
+import { smtpMailer,mailWorker,enqueueMail,cancelResets } from './mail.mjs';
+import { recordAudit,listAudit,mutationEvent } from './audit.mjs';
+import { proxyList,clientIP } from './proxy.mjs';
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 
 function respond(res,status,body,type='application/json; charset=utf-8',extra={}) {
+  if(status>=200 && status<300)res.cmsAudit?.(body);
   res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store',...extra});
   res.end(res.cmsHead?undefined:type.startsWith('application/json')?JSON.stringify(body):body);
 }
@@ -40,12 +46,16 @@ function requireSession(db,req) {
   if(!['admin','editor'].includes(session.role)) throw new HttpError(403,'دسترسی کافی ندارید.');
   return session;
 }
-export async function createApp({dbPath=':memory:',origin='http://localhost:3000',publicURL=origin,secureCookies=false,mediaDir=resolve(dirname(dbPath===':memory:'?'data/cms.sqlite':dbPath),'media')}={}) {
+export async function createApp({dbPath=':memory:',origin='http://localhost:3000',publicURL=origin,secureCookies=false,securityKey=null,mailer=null,requireAdminMfa=false,trustedProxyIPs=[],mediaDir=resolve(dirname(dbPath===':memory:'?'data/cms.sqlite':dbPath),'media')}={}) {
   origin=new URL(origin).origin;
   const baseURL=siteURL(publicURL);
+  const key=parseSecurityKey(securityKey),trusted=proxyList(trustedProxyIPs);
+  if((mailer || requireAdminMfa) && !key)throw new Error('CMS_SECURITY_KEY is required for SMTP and enforced administrator MFA');
   const release=acquireDataLock(dbPath);let db,dummyHash;
-  try{db=openDatabase(dbPath);dummyHash=await hashPassword(randomBytes(24).toString('hex'));}
+  try{db=openDatabase(dbPath);assertSecurityKey(db,key);dummyHash=await hashPassword(randomBytes(24).toString('hex'));}
   catch(error){db?.close();release();throw error;}
+  const delivery=mailWorker(db,key,mailer);
+  const notify=mailer&&key?(user,text)=>enqueueMail(db,key,'security_notice',{to:user.email,subject:'اطلاع امنیتی Core CMS',text}):undefined;
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('X-Frame-Options','DENY');
@@ -53,36 +63,60 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if(secureCookies) res.setHeader('Strict-Transport-Security','max-age=31536000');
     try {
+      let ip;try{ip=clientIP(req,trusted);}catch{throw new HttpError(400,'اطلاعات پراکسی معتبر نیست.');}
       const url=new URL(req.url,origin);const path=url.pathname;const method=req.method==='HEAD'?'GET':req.method;res.cmsHead=req.method==='HEAD';
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method)) throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
       if(['POST','PUT','DELETE'].includes(method) && req.headers.origin!==origin) throw new HttpError(403,'مبدأ درخواست معتبر نیست.');
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.3.0'});
-      if(path==='/api/auth/login' && method==='POST') {
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.4.0'});
+      if(path==='/api/auth/options' && method==='GET')return respond(res,200,{passwordRecovery:Boolean(mailer&&key)});
+      if(path==='/api/auth/forgot-password' && method==='POST') {
+        if(!mailer || !key)throw new HttpError(503,'بازیابی رمز در حال حاضر در دسترس نیست.');
+        if(rateLimited(db,digest(`reset-ip:${ip}`)))throw new HttpError(429,'درخواست‌های زیادی ارسال شده؛ بعداً تلاش کنید.');
+        const data=await readBody(req,4096);
+        if(typeof data.email!=='string' || data.email.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim()))throw new HttpError(422,'ایمیل معتبر وارد کنید.');
+        const email=data.email.trim().toLowerCase();
+        if(rateLimited(db,digest(`reset-email:${email}`),3))throw new HttpError(429,'درخواست‌های زیادی ارسال شده؛ بعداً تلاش کنید.');
+        await verifyPassword(randomBytes(24).toString('hex'),dummyHash);
+        try{issueReset(db,email,key,origin);}catch{console.error('CMS reset delivery could not be queued');}
+        return respond(res,200,{ok:true,message:'اگر حساب فعال با این ایمیل وجود داشته باشد، لینک بازیابی برای آن ارسال خواهد شد.'});
+      }
+      if(path==='/api/auth/reset-password' && method==='POST') {
+        if(rateLimited(db,digest(`reset-use:${ip}`)))throw new HttpError(429,'تلاش‌های زیادی انجام شده؛ بعداً تلاش کنید.');
+        await resetPassword(db,await readBody(req,8192),key,notify);
+        return respond(res,200,{ok:true},undefined,{'Set-Cookie':cookie('',secureCookies,true)});
+      }
+      if(path==='/api/auth/login'  && method==='POST') {
         const data=await readBody(req);
         if(typeof data.email!=='string' || data.email.length>254 || typeof data.password!=='string' || data.password.length>256) throw new HttpError(422,'ایمیل و رمز معتبر وارد کنید.');
         const email=data.email.trim().toLowerCase();
-        // Forwarded headers are deliberately not trusted. Proxy configuration is a production task.
-        const ipKey=digest(`ip:${req.socket.remoteAddress}`);const userKey=digest(`email:${email}`);
+        // Forwarded headers are accepted only from explicitly configured proxy addresses.
+        const ipKey=digest(`ip:${ip}`);const userKey=digest(`email:${email}`);
         const ipLimited=rateLimited(db,ipKey);const userLimited=rateLimited(db,userKey);
         if(ipLimited || userLimited) throw new HttpError(429,'تلاش‌های ورود زیاد است؛ ۱۵ دقیقه بعد دوباره امتحان کنید.');
         const user=db.prepare('SELECT * FROM users WHERE email=?').get(email);
         const valid=await verifyPassword(data.password,user?.password_hash||dummyHash);
+        const upgraded=valid && user?.password_hash.split('$').length===3?await hashPassword(data.password):null;
         const latest=user?db.prepare('SELECT * FROM users WHERE id=?').get(user.id):null;
-        if(!latest || !valid || !latest.active || latest.password_hash!==user.password_hash) throw new HttpError(401,'ایمیل یا رمز عبور صحیح نیست.');
-        db.prepare('DELETE FROM login_attempts WHERE key IN (?,?)').run(ipKey,userKey);
-        const session=createSession(db,latest.id);
+        if(!latest || !valid || !latest.active || latest.password_hash!==user.password_hash){recordAudit(db,{event:'auth.login_failed',targetId:userKey,ip});throw new HttpError(401,'ایمیل، رمز یا کد دومرحله‌ای صحیح نیست.');}
+        let session;db.exec('BEGIN IMMEDIATE');
+        try {
+          if(!consumeFactor(db,latest,data.mfaCode,key))throw new HttpError(401,'ایمیل، رمز یا کد دومرحله‌ای صحیح نیست.');
+          if(upgraded){db.prepare('UPDATE users SET password_hash=?,updated_at=? WHERE id=?').run(upgraded,new Date(Math.max(Date.now(),Date.parse(latest.updated_at)+1)).toISOString(),latest.id);cancelResets(db,latest.id);recordAudit(db,{event:'auth.password_hash_upgraded',actorId:latest.id,targetId:latest.id});}
+          db.prepare('DELETE FROM login_attempts WHERE key IN (?,?)').run(ipKey,userKey);session=createSession(db,latest.id);
+          recordAudit(db,{event:'auth.login',actorId:latest.id,targetId:latest.id,ip});db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');recordAudit(db,{event:'auth.login_failed',targetId:userKey,ip});throw error;}
         return respond(res,200,{user:{id:latest.id,email:latest.email,role:latest.role},csrf:session.csrf},undefined,{'Set-Cookie':cookie(session.token,secureCookies)});
       }
       if(path==='/api/public/contact-token' && method==='GET') {
         if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
-        return respond(res,200,issueContactToken(db,req.socket.remoteAddress));
+        return respond(res,200,issueContactToken(db,ip));
       }
       if(path==='/api/public/contact' && method==='POST') {
         if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
-        contactLimit(db,digest(`contact-send:${req.socket.remoteAddress}`),10);
+        contactLimit(db,digest(`contact-send:${ip}`),10);
         const data=await readBody(req,16*1024);
         if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
-        submitContact(db,req.socket.remoteAddress,data);
+        submitContact(db,ip,data);
         return respond(res,201,{ok:true,message:'پیام شما ثبت شد.'});
       }
       if(path==='/api/public/content'  && method==='GET') {
@@ -93,14 +127,29 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       if(path.startsWith('/api/')) {
         const session=requireSession(db,req);
         req.cmsDb=db;
+        const mfaRequired=requireAdminMfa && session.role==='admin' && !session.mfa_enabled;
+        if(mfaRequired && !['/api/auth/me','/api/auth/logout'].includes(path) && !path.startsWith('/api/auth/mfa'))throw new HttpError(403,'برای مدیریت سایت ابتدا ورود دومرحله‌ای را فعال کنید.');
+        const event=mutationEvent(method,path);if(event)res.cmsAudit=body=>recordAudit(db,{event,actorId:session.user_id,targetId:typeof body?.id==='string'?body.id:path.match(/[a-f0-9-]{36}$/)?.[0]||null,ip});
         if(['POST','PUT','DELETE'].includes(method) && req.headers['x-csrf-token']!==session.csrf) throw new HttpError(403,'توکن درخواست معتبر نیست؛ صفحه را تازه کنید.');
-        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role},csrf:session.csrf});
+        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role,mfaEnabled:Boolean(session.mfa_enabled),mfaRequired},csrf:session.csrf});
         if(path==='/api/auth/logout' && method==='POST') { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.token_hash);return respond(res,200,{ok:true},undefined,{'Set-Cookie':cookie('',secureCookies,true)}); }
         if(path==='/api/auth/password' && method==='PUT') {
-          const key=digest(`password:${session.user_id}`);if(rateLimited(db,key))throw new HttpError(429,'تلاش‌های تغییر رمز زیاد است؛ بعداً امتحان کنید.');
-          await changePassword(db,session.user_id,await readBody(req),()=>requireSession(db,req));
-          db.prepare('DELETE FROM login_attempts WHERE key=?').run(key);
+          const attemptKey=digest(`password:${session.user_id}`);if(rateLimited(db,attemptKey))throw new HttpError(429,'تلاش‌های تغییر رمز زیاد است؛ بعداً امتحان کنید.');
+          await changePassword(db,session.user_id,await readBody(req),()=>requireSession(db,req),key,notify);
+          db.prepare('DELETE FROM login_attempts WHERE key=?').run(attemptKey);
           return respond(res,200,{ok:true},undefined,{'Set-Cookie':cookie('',secureCookies,true)});
+        }
+        if(path==='/api/auth/mfa' && method==='GET')return respond(res,200,mfaStatus(db,session.user_id,key));
+        if(path.startsWith('/api/auth/mfa/') && method==='POST') {
+          if(rateLimited(db,digest(`mfa:${session.user_id}`)))throw new HttpError(429,'تلاش‌های زیادی انجام شده؛ بعداً تلاش کنید.');
+          const data=await readBody(req,4096);
+          if(path==='/api/auth/mfa/setup')return respond(res,200,await startMfa(db,session.user_id,data,key,()=>requireSession(db,req)));
+          if(path==='/api/auth/mfa/confirm')return respond(res,200,confirmMfa(db,session.user_id,data,key,notify),undefined,{'Set-Cookie':cookie('',secureCookies,true)});
+          if(['/api/auth/mfa/disable','/api/auth/mfa/recovery-codes'].includes(path))return respond(res,200,await changeMfa(db,session.user_id,data,key,()=>requireSession(db,req),{disable:path.endsWith('/disable'),notify}),undefined,{'Set-Cookie':cookie('',secureCookies,true)});
+        }
+        if(path==='/api/audit' && method==='GET') {
+          if(session.role!=='admin')throw new HttpError(403,'فقط مدیر به رخدادها دسترسی دارد.');
+          return respond(res,200,listAudit(db,Number(url.searchParams.get('page')||1)));
         }
         if(path==='/api/auth/sessions' && method==='GET')return respond(res,200,{sessions:listSessions(db,session)});
         const sessionMatch=path.match(/^\/api\/auth\/sessions\/([a-f0-9-]{36})$/);
@@ -208,8 +257,9 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         throw new HttpError(404,'مسیر پیدا نشد.');
       }
       if(method!=='GET') throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
-      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js'};
+      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
       if(assets[path]) {
+        if(path.startsWith('/admin/reset-password'))res.setHeader('Referrer-Policy','no-referrer');
         const file=assets[path];const types={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};
         return respond(res,200,await readFile(resolve(publicDir,file),'utf8'),types[file.split('.').pop()]);
       }
@@ -217,7 +267,8 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       const imageMatch=path.match(/^\/media\/([a-f0-9-]{36})\.(png|jpg)$/);
       if(imageMatch) {
         const item=db.prepare('SELECT * FROM media WHERE id=?').get(imageMatch[1]);
-        if(!item || (item.mime==='image/png'?'png':'jpg')!==imageMatch[2] || (!referencedMedia(items).includes(item.id) && !getSession(db,req)))throw new HttpError(404,'تصویر پیدا نشد.');
+        const session=getSession(db,req),authorized=session && !(requireAdminMfa && session.role==='admin' && !session.mfa_enabled);
+        if(!item || (item.mime==='image/png'?'png':'jpg')!==imageMatch[2] || (!referencedMedia(items).includes(item.id) && !authorized))throw new HttpError(404,'تصویر پیدا نشد.');
         return respond(res,200,await loadMedia(mediaDir,item),item.mime);
       }
       if(path==='/robots.txt') return respond(res,200,`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nSitemap: ${baseURL}/sitemap.xml\n`,'text/plain; charset=utf-8');
@@ -246,15 +297,16 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       else res.end();
     }
   });
+  server.requestTimeout=30000;server.headersTimeout=10000;server.keepAliveTimeout=5000;server.maxRequestsPerSocket=100;
   let closing;
-  return {server,db,mediaDir,close:()=>closing??= (async()=>{try{if(server.listening)await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}finally{try{db.close();}finally{release();}}})()};
+  return {server,db,mediaDir,flushMail:delivery.flush,close:()=>closing??= (async()=>{try{if(server.listening)await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}finally{try{await delivery.close();}finally{try{db.close();}finally{release();}}}})()};
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const port=Number(process.env.CMS_PORT||3000);const host=process.env.CMS_HOST||'127.0.0.1';
   const origin=process.env.CMS_ORIGIN||`http://localhost:${port}`;
   const secureCookies=process.env.CMS_SECURE_COOKIES==='1';
   if(process.env.NODE_ENV==='production' && (!secureCookies || new URL(origin).protocol!=='https:')) throw new Error('Production requires HTTPS CMS_ORIGIN and CMS_SECURE_COOKIES=1');
-  const app=await createApp({dbPath:resolve(process.env.CMS_DB_PATH||'data/cms.sqlite'),origin,publicURL:process.env.CMS_PUBLIC_URL||origin,secureCookies,...(process.env.CMS_MEDIA_DIR?{mediaDir:resolve(process.env.CMS_MEDIA_DIR)}:{})});
+  const app=await createApp({dbPath:resolve(process.env.CMS_DB_PATH||'data/cms.sqlite'),origin,publicURL:process.env.CMS_PUBLIC_URL||origin,secureCookies,securityKey:process.env.CMS_SECURITY_KEY,mailer:smtpMailer(),requireAdminMfa:process.env.CMS_REQUIRE_ADMIN_MFA==='1',trustedProxyIPs:process.env.CMS_TRUSTED_PROXY_IPS||'',...(process.env.CMS_MEDIA_DIR?{mediaDir:resolve(process.env.CMS_MEDIA_DIR)}:{})});
   app.server.on('error',async error=>{console.error('CMS server failed:',error.code||error.name);await app.close();process.exitCode=1;});
   app.server.listen(port,host,()=>console.log(`Core CMS: ${origin}/admin`));
   for(const signal of ['SIGINT','SIGTERM']) process.on(signal,async()=>{await app.close();process.exit(0);});
