@@ -3,6 +3,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { resolve } from 'node:path';
 import { openDatabase } from '../src/database.mjs';
 import { createUser } from '../src/auth.mjs';
+import { acquireDataLock } from '../src/data-lock.mjs';
 async function password(prompt) {
   process.stdout.write(prompt);emitKeypressEvents(process.stdin);process.stdin.setRawMode(true);process.stdin.resume();
   return new Promise((resolve,reject)=>{
@@ -21,5 +22,6 @@ if(!process.stdin.isTTY)throw new Error('Run create-admin from an interactive te
 const rl=createInterface({input:process.stdin,output:process.stdout});const email=await rl.question('Admin email: ');rl.close();
 const first=await password('Password (hidden, at least 12 characters): ');const second=await password('Repeat password (hidden): ');
 if(first!==second)throw new Error('Passwords do not match');
-const db=openDatabase(resolve(process.env.CMS_DB_PATH||'data/cms.sqlite'));
-try{await createUser(db,{email,password:first});console.log('Admin created. Run npm start and open /admin.');}finally{db.close();}
+const path=resolve(process.env.CMS_DB_PATH||'data/cms.sqlite'),release=acquireDataLock(path);let db;
+try{db=openDatabase(path);}catch(error){release();throw error;}
+try{await createUser(db,{email,password:first});console.log('Admin created. Run npm start and open /admin.');}finally{try{db.close();}finally{release();}}

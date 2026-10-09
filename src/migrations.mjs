@@ -28,7 +28,24 @@ const migrations = [
     db.exec('CREATE UNIQUE INDEX session_id_unique ON sessions(session_id);');
     db.prepare('INSERT INTO navigation VALUES(1,?,?)').run('[]',new Date().toISOString());
   }},
+  { version:3, apply(db) {
+    db.exec(`
+      CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE content_categories (content_id TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE, category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE, PRIMARY KEY(content_id,category_id));
+      CREATE INDEX category_content ON content_categories(category_id);
+      CREATE TABLE redirects (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, content_id TEXT REFERENCES content(id) ON DELETE CASCADE, category_id TEXT REFERENCES categories(id) ON DELETE CASCADE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK((content_id IS NOT NULL)+(category_id IS NOT NULL)=1));
+      CREATE TABLE messages (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('new','read','archived')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX message_status ON messages(status,created_at);
+      CREATE TABLE contact_tokens (token_hash TEXT PRIMARY KEY, ip_hash TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE contact_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL);
+    `);
+    const site=JSON.parse(db.prepare("SELECT value FROM settings WHERE key='site'").get().value);
+    site.contactEnabled=false;
+    db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
+  }},
 ];
+
+export const SCHEMA_VERSION=migrations.at(-1).version;
 
 export function applyMigrations(db) {
   db.exec('CREATE TABLE IF NOT EXISTS schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');

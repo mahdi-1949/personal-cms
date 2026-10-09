@@ -10,7 +10,11 @@ import { listUsers,addUser,updateUser,changePassword,listSessions } from './user
 import { getMenu,putMenu,publicMenu,referencedMedia } from './blocks.mjs';
 import { MAX_IMAGE_BYTES,listMedia,uploadMedia,updateMedia,deleteMedia,loadMedia } from './media.mjs';
 import { modules,moduleByKey,contentPath } from './modules/registry.mjs';
-import { renderHome,renderContent,renderNotFound,sitemap,siteURL } from './render.mjs';
+import { renderHome,renderContent,renderCategory,renderContact,renderNotFound,sitemap,siteURL } from './render.mjs';
+import { listCategories,putCategory,publicCategories,categoryPath } from './categories.mjs';
+import { listRedirects,putRedirect,publicRedirects } from './redirects.mjs';
+import { contactLimit,issueContactToken,submitContact,listMessages,updateMessage } from './contact.mjs';
+import { acquireDataLock } from './data-lock.mjs';
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 
 function respond(res,status,body,type='application/json; charset=utf-8',extra={}) {
@@ -22,9 +26,9 @@ async function readBytes(req,limit) {
   for await(const chunk of req){size+=chunk.length;if(size>limit)throw new HttpError(413,'حجم درخواست بیش از حد مجاز است.');chunks.push(chunk);}
   return Buffer.concat(chunks);
 }
-async function readBody(req) {
+async function readBody(req,limit=512*1024) {
   if (!String(req.headers['content-type']||'').startsWith('application/json')) throw new HttpError(415,'درخواست باید JSON باشد.');
-  const bytes=await readBytes(req,512*1024);let body;
+  const bytes=await readBytes(req,limit);let body;
   try { body=JSON.parse(bytes.toString()); if (!body || typeof body!=='object' || Array.isArray(body)) throw new Error(); }
   catch { throw new HttpError(400,'JSON معتبر نیست.'); }
   if(req.cmsDb)requireSession(req.cmsDb,req);
@@ -39,8 +43,9 @@ function requireSession(db,req) {
 export async function createApp({dbPath=':memory:',origin='http://localhost:3000',publicURL=origin,secureCookies=false,mediaDir=resolve(dirname(dbPath===':memory:'?'data/cms.sqlite':dbPath),'media')}={}) {
   origin=new URL(origin).origin;
   const baseURL=siteURL(publicURL);
-  const db=openDatabase(dbPath);
-  const dummyHash=await hashPassword(randomBytes(24).toString('hex'));
+  const release=acquireDataLock(dbPath);let db,dummyHash;
+  try{db=openDatabase(dbPath);dummyHash=await hashPassword(randomBytes(24).toString('hex'));}
+  catch(error){db?.close();release();throw error;}
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('X-Frame-Options','DENY');
@@ -51,7 +56,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       const url=new URL(req.url,origin);const path=url.pathname;const method=req.method==='HEAD'?'GET':req.method;res.cmsHead=req.method==='HEAD';
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method)) throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
       if(['POST','PUT','DELETE'].includes(method) && req.headers.origin!==origin) throw new HttpError(403,'مبدأ درخواست معتبر نیست.');
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.2.0'});
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.3.0'});
       if(path==='/api/auth/login' && method==='POST') {
         const data=await readBody(req);
         if(typeof data.email!=='string' || data.email.length>254 || typeof data.password!=='string' || data.password.length>256) throw new HttpError(422,'ایمیل و رمز معتبر وارد کنید.');
@@ -68,10 +73,22 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         const session=createSession(db,latest.id);
         return respond(res,200,{user:{id:latest.id,email:latest.email,role:latest.role},csrf:session.csrf},undefined,{'Set-Cookie':cookie(session.token,secureCookies)});
       }
-      if(path==='/api/public/content' && method==='GET') {
+      if(path==='/api/public/contact-token' && method==='GET') {
+        if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
+        return respond(res,200,issueContactToken(db,req.socket.remoteAddress));
+      }
+      if(path==='/api/public/contact' && method==='POST') {
+        if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
+        contactLimit(db,digest(`contact-send:${req.socket.remoteAddress}`),10);
+        const data=await readBody(req,16*1024);
+        if(!getSite(db).contactEnabled)throw new HttpError(404,'فرم تماس غیرفعال است.');
+        submitContact(db,req.socket.remoteAddress,data);
+        return respond(res,201,{ok:true,message:'پیام شما ثبت شد.'});
+      }
+      if(path==='/api/public/content'  && method==='GET') {
         const site=getSite(db);const items=publishedContent(db,site);const publicIds=new Set(items.map(item=>item.id));
         const content=items.map(item=>({...item,blocks:item.blocks.filter(block=>block.type!=='cta' || publicIds.has(block.contentId))}));
-        return respond(res,200,{site:{name:site.name,description:site.description},content,menu:publicMenu(db,items)});
+        return respond(res,200,{site:{name:site.name,description:site.description,contactEnabled:site.contactEnabled},content,menu:publicMenu(db,items),categories:publicCategories(db,items)});
       }
       if(path.startsWith('/api/')) {
         const session=requireSession(db,req);
@@ -99,6 +116,44 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           const userMatch=path.match(/^\/api\/users\/([a-f0-9-]{36})$/);
           if(userMatch && method==='PUT')return respond(res,200,await updateUser(db,userMatch[1],await readBody(req),()=>requireSession(db,req)));
         }
+        if(path==='/api/categories' && method==='GET')return respond(res,200,{categories:listCategories(db)});
+        if(path==='/api/categories' || path.startsWith('/api/categories/')) {
+          if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند دسته‌ها را مدیریت کند.');
+          if(path==='/api/categories' && method==='POST')return respond(res,201,putCategory(db,await readBody(req)));
+          const match=path.match(/^\/api\/categories\/([a-f0-9-]{36})$/);
+          if(match && method==='PUT')return respond(res,200,putCategory(db,await readBody(req),match[1]));
+          if(match && method==='DELETE') {
+            const data=await readBody(req),old=db.prepare('SELECT * FROM categories WHERE id=?').get(match[1]);
+            if(!old)throw new HttpError(404,'دسته پیدا نشد.');
+            if(old.updated_at!==data.expected_updated_at)throw new HttpError(409,'دسته تغییر کرده؛ فهرست را تازه کنید.');
+            if(db.prepare('SELECT content_id FROM content_categories WHERE category_id=? LIMIT 1').get(old.id))throw new HttpError(409,'این دسته در مقاله استفاده شده؛ ابتدا ارتباط را حذف کنید.');
+            db.prepare('DELETE FROM categories WHERE id=?').run(old.id);return respond(res,200,{ok:true});
+          }
+        }
+        if(path==='/api/redirects' || path.startsWith('/api/redirects/')) {
+          if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند ریدایرکت‌ها را مدیریت کند.');
+          if(path==='/api/redirects' && method==='GET')return respond(res,200,{redirects:listRedirects(db)});
+          if(path==='/api/redirects' && method==='POST')return respond(res,201,putRedirect(db,await readBody(req)));
+          const match=path.match(/^\/api\/redirects\/([a-f0-9-]{36})$/);
+          if(match && method==='DELETE') {
+            const data=await readBody(req),old=db.prepare('SELECT * FROM redirects WHERE id=?').get(match[1]);
+            if(!old)throw new HttpError(404,'ریدایرکت پیدا نشد.');
+            if(old.updated_at!==data.expected_updated_at)throw new HttpError(409,'ریدایرکت تغییر کرده؛ فهرست را تازه کنید.');
+            db.prepare('DELETE FROM redirects WHERE id=?').run(old.id);return respond(res,200,{ok:true});
+          }
+        }
+        if(path==='/api/messages' || path.startsWith('/api/messages/')) {
+          if(session.role!=='admin')throw new HttpError(403,'فقط مدیر به پیام‌ها دسترسی دارد.');
+          if(path==='/api/messages' && method==='GET')return respond(res,200,listMessages(db,{status:url.searchParams.get('status')||undefined,page:Number(url.searchParams.get('page')||1)}));
+          const match=path.match(/^\/api\/messages\/([a-f0-9-]{36})$/);
+          if(match && method==='PUT')return respond(res,200,updateMessage(db,match[1],await readBody(req)));
+          if(match && method==='DELETE') {
+            const data=await readBody(req),old=db.prepare('SELECT * FROM messages WHERE id=?').get(match[1]);
+            if(!old)throw new HttpError(404,'پیام پیدا نشد.');
+            if(old.updated_at!==data.expected_updated_at)throw new HttpError(409,'پیام تغییر کرده؛ فهرست را تازه کنید.');
+            db.prepare('DELETE FROM messages WHERE id=?').run(old.id);return respond(res,200,{ok:true});
+          }
+        }
         if(path==='/api/navigation' && method==='GET')return respond(res,200,getMenu(db));
         if(path==='/api/navigation' && method==='PUT') {
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند منو را تغییر دهد.');
@@ -124,7 +179,10 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           if(session.role!=='admin') throw new HttpError(403,'فقط مدیر می‌تواند تنظیمات را تغییر دهد.');
           const data=await readBody(req);
           if(typeof data.name!=='string' || !data.name.trim() || data.name.length>100 || typeof data.description!=='string' || data.description.length>500 || !Array.isArray(data.enabledModules) || data.enabledModules.some(key=>!moduleByKey(key))) throw new HttpError(422,'تنظیمات معتبر نیست.');
-          const site={name:data.name.trim(),description:data.description.trim(),enabledModules:[...new Set(['pages',...data.enabledModules])]};saveSite(db,site);return respond(res,200,site);
+          const contactEnabled=data.contactEnabled===undefined?getSite(db).contactEnabled:data.contactEnabled;
+          if(typeof contactEnabled!=='boolean')throw new HttpError(422,'وضعیت فرم تماس معتبر نیست.');
+          if(contactEnabled && db.prepare("SELECT id FROM content WHERE kind='pages' AND slug='contact'").get())throw new HttpError(409,'صفحه قدیمی با آدرس contact وجود دارد؛ پیش از فعال‌سازی، آدرس آن را تغییر دهید.');
+          const site={name:data.name.trim(),description:data.description.trim(),contactEnabled,enabledModules:[...new Set(['pages',...data.enabledModules])]};saveSite(db,site);return respond(res,200,site);
         }
         if(path==='/api/content' && method==='GET') return respond(res,200,{content:listContent(db)});
         if(path==='/api/content' && method==='POST') {
@@ -150,12 +208,12 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         throw new HttpError(404,'مسیر پیدا نشد.');
       }
       if(method!=='GET') throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
-      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css'};
+      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js'};
       if(assets[path]) {
         const file=assets[path];const types={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};
         return respond(res,200,await readFile(resolve(publicDir,file),'utf8'),types[file.split('.').pop()]);
       }
-      const site=getSite(db);const items=publishedContent(db,site);const options={baseURL,basePath:'',items,menu:publicMenu(db,items),media:listMedia(db)};
+      const site=getSite(db);const items=publishedContent(db,site);const categories=publicCategories(db,items);const options={baseURL,basePath:'',items,categories,menu:publicMenu(db,items),media:listMedia(db)};
       const imageMatch=path.match(/^\/media\/([a-f0-9-]{36})\.(png|jpg)$/);
       if(imageMatch) {
         const item=db.prepare('SELECT * FROM media WHERE id=?').get(imageMatch[1]);
@@ -163,13 +221,24 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         return respond(res,200,await loadMedia(mediaDir,item),item.mime);
       }
       if(path==='/robots.txt') return respond(res,200,`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nSitemap: ${baseURL}/sitemap.xml\n`,'text/plain; charset=utf-8');
-      if(path==='/sitemap.xml') return respond(res,200,sitemap(items,baseURL),'application/xml; charset=utf-8');
+      if(path==='/sitemap.xml') return respond(res,200,sitemap(items,baseURL,[...categories.map(categoryPath),...(site.contactEnabled?['/contact/']:[])]),'application/xml; charset=utf-8');
+      if((path==='/contact/' || path==='/contact') && site.contactEnabled) {
+        if(path==='/contact')return respond(res,308,'','text/plain',{Location:'/contact/'});
+        return respond(res,200,renderContact(site,options),'text/html; charset=utf-8');
+      }
+      const category=categories.find(category=>categoryPath(category)===path || categoryPath(category)===`${path}/`);
+      if(category) {
+        if(!path.endsWith('/'))return respond(res,308,'','text/plain',{Location:categoryPath(category)});
+        return respond(res,200,renderCategory(site,category,items,options),'text/html; charset=utf-8');
+      }
       if(path==='/') return respond(res,200,renderHome(site,items,options),'text/html; charset=utf-8');
       const item=items.find(item=>contentPath(item)===path || contentPath(item)===`${path}/`);
       if(item) {
         if(!path.endsWith('/')) return respond(res,308,'','text/plain',{Location:contentPath(item)});
         return respond(res,200,renderContent(site,item,options),'text/html; charset=utf-8');
       }
+      const alias=publicRedirects(db,items,categories).find(alias=>alias.path===path || alias.path===`${path}/`);
+      if(alias)return respond(res,308,'','text/plain',{Location:alias.destination});
       return respond(res,404,renderNotFound(site,options),'text/html; charset=utf-8');
     } catch(error) {
       if(!error.status) console.error('CMS request failed:',error.name);
@@ -177,7 +246,8 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       else res.end();
     }
   });
-  return {server,db,mediaDir,close:async()=>{await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));db.close();}};
+  let closing;
+  return {server,db,mediaDir,close:()=>closing??= (async()=>{try{if(server.listening)await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}finally{try{db.close();}finally{release();}}})()};
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const port=Number(process.env.CMS_PORT||3000);const host=process.env.CMS_HOST||'127.0.0.1';
@@ -185,6 +255,7 @@ if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url))
   const secureCookies=process.env.CMS_SECURE_COOKIES==='1';
   if(process.env.NODE_ENV==='production' && (!secureCookies || new URL(origin).protocol!=='https:')) throw new Error('Production requires HTTPS CMS_ORIGIN and CMS_SECURE_COOKIES=1');
   const app=await createApp({dbPath:resolve(process.env.CMS_DB_PATH||'data/cms.sqlite'),origin,publicURL:process.env.CMS_PUBLIC_URL||origin,secureCookies,...(process.env.CMS_MEDIA_DIR?{mediaDir:resolve(process.env.CMS_MEDIA_DIR)}:{})});
+  app.server.on('error',async error=>{console.error('CMS server failed:',error.code||error.name);await app.close();process.exitCode=1;});
   app.server.listen(port,host,()=>console.log(`Core CMS: ${origin}/admin`));
   for(const signal of ['SIGINT','SIGTERM']) process.on(signal,async()=>{await app.close();process.exit(0);});
 }
