@@ -23,16 +23,17 @@ async function fixture(t){
   const user=await createUser(app.db,{email:'admin@example.test',password});const session=createSession(app.db,user.id);
   const category=putCategory(app.db,{name:'دسته آزمایشی',slug:'test'});
   const image=await uploadMedia(app.db,mediaDir,png,{mime:'image/png',filename:'private.png',userId:user.id});
+  const storedImage=await readFile(mediaPath(mediaDir,image));
   let item=putContent(app.db,{kind:'posts',title:'محتوای آزمایشی',slug:'old',status:'published',excerpt:'خلاصه',body:'متن',seo_title:'',seo_description:'',categoryIds:[category.id],blocks:[{type:'image',mediaId:image.id,alt:'تصویر',caption:''}]});
   item=putContent(app.db,{...item,slug:'new'},item.id);
   app.db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?)').run('message-id','User','u@example.test','Private subject','Private message','new','2026-01-01','2026-01-01');
   saveSite(app.db,{...getSite(app.db),contactEnabled:true});
-  return {dir,dbPath,mediaDir,app,user,session,category,image,item,outputDir:join(dir,'backups/full')};
+  return {dir,dbPath,mediaDir,app,user,session,category,image,item,storedImage,outputDir:join(dir,'backups/full')};
 }
 
 test('complete backup restores content, categories, redirects, inbox, passwords and images; sessions are revoked',async t=>{
   const f=await fixture(t);const hash=f.app.db.prepare('SELECT password_hash FROM users').get().password_hash;await f.app.close();
-  const result=await createBackup(f);assert.equal(result.files,2);const manifest=await verifyBackup(f.outputDir);assert.equal(manifest.schemaVersion,3);
+  const result=await createBackup(f);assert.equal(result.files,2);const manifest=await verifyBackup(f.outputDir);assert.equal(manifest.schemaVersion,4);
   const source=openDatabase(f.dbPath);assert.equal(source.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,1);source.close();
   const restoredPath=join(f.dir,'recovered/cms.sqlite');const restored=await restoreBackup({inputDir:f.outputDir,dbPath:restoredPath});
   const app=await createApp({dbPath:restored.database,mediaDir:restored.media,origin:'http://cms.test'});t.after(()=>app.close());
@@ -40,7 +41,7 @@ test('complete backup restores content, categories, redirects, inbox, passwords 
   assert.equal(listContent(app.db)[0].slug,'new');assert.deepEqual(listContent(app.db)[0].categoryIds,[f.category.id]);
   assert.equal(app.db.prepare('SELECT path FROM redirects').get().path,'/articles/old/');
   assert.equal(app.db.prepare('SELECT message FROM messages').get().message,'Private message');assert.equal(getSite(app.db).contactEnabled,true);
-  assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0);assert.deepEqual(await readFile(mediaPath(restored.media,f.image)),png);
+  assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0);assert.deepEqual(await readFile(mediaPath(restored.media,f.image)),f.storedImage);
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${app.server.address().port}`;
   const alias=await fetch(`${base}/articles/old/`,{redirect:'manual'});assert.equal(alias.status,308);assert.equal(alias.headers.get('location'),'/articles/new/');
   assert.equal((await fetch(`${base}/media/${f.image.id}.png`)).status,200);
@@ -54,7 +55,7 @@ test('managed database locks reject live backups and concurrent server aliases a
   await assert.rejects(createBackup(f),/data is locked/);await assert.rejects(createApp({dbPath:f.dbPath}),/data is locked/);
   const alias=join(f.dir,'alias.sqlite');await symlink(f.dbPath,alias);
   await assert.rejects(createApp({dbPath:alias}),/data is locked/);
-  await f.app.close();await createBackup(f);assert.equal((await verifyBackup(f.outputDir)).schemaVersion,3);
+  await f.app.close();await createBackup(f);assert.equal((await verifyBackup(f.outputDir )).schemaVersion,4);
 });
 
 test('damaged backup bytes and invalid SQLite are rejected before any restore destination is installed',async t=>{
@@ -98,12 +99,12 @@ test('restore never overwrites an existing database or media directory',async t=
 
 test('v0.2 backup is verified and upgraded during restore; existing contact content is preserved',async t=>{
   const f=await fixture(t);await f.app.close();const db=openDatabase(f.dbPath);
-  db.exec('DROP TABLE contact_limits; DROP TABLE contact_tokens; DROP TABLE messages; DROP TABLE redirects; DROP TABLE content_categories; DROP TABLE categories; DELETE FROM schema_versions WHERE version=3;');
+  db.exec('DROP TABLE recovery_codes; DROP TABLE password_resets; DROP TABLE mail_outbox; DROP TABLE audit_log; ALTER TABLE users DROP COLUMN mfa_secret; ALTER TABLE users DROP COLUMN mfa_pending_secret; ALTER TABLE users DROP COLUMN mfa_pending_expires; ALTER TABLE users DROP COLUMN mfa_last_step; DROP TABLE contact_limits; DROP TABLE contact_tokens; DROP TABLE messages; DROP TABLE redirects; DROP TABLE content_categories; DROP TABLE categories; DELETE FROM schema_versions WHERE version>=3;');
   db.prepare("UPDATE content SET kind='pages',slug='contact',blocks='[]' WHERE id=?").run(f.item.id);db.close();
   await createBackup(f);assert.equal((await verifyBackup(f.outputDir)).schemaVersion,2);
   const result=await restoreBackup({inputDir:f.outputDir,dbPath:join(f.dir,'legacy-restored/cms.sqlite')});
   const app=await createApp({dbPath:result.database,origin:'http://cms.test'});t.after(()=>app.close());
-  assert.equal(app.db.prepare('SELECT MAX(version) AS n FROM schema_versions').get().n,3);assert.equal(listContent(app.db)[0].slug,'contact');assert.equal(getSite(app.db).contactEnabled,false);
+  assert.equal(app.db.prepare('SELECT MAX(version) AS n FROM schema_versions').get().n,4);assert.equal(listContent(app.db)[0].slug,'contact');assert.equal(getSite(app.db).contactEnabled,false);
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${app.server.address().port}`;
   assert.equal((await fetch(`${base}/contact/`)).status,200);
   const session=createSession(app.db,f.user.id);const response=await fetch(`${base}/api/settings`,{method:'PUT',headers:{Origin:'http://cms.test','Content-Type':'application/json',Cookie:`cms_session=${session.token}`,'X-CSRF-Token':session.csrf},body:JSON.stringify({...getSite(app.db),contactEnabled:true})});assert.equal(response.status,409);
@@ -116,5 +117,5 @@ test('documented backup and restore CLI commands work with explicit new paths',a
   const created=await run(process.execPath,['scripts/backup.mjs',f.outputDir],options);assert.match(created.stdout,/Backup verified and saved/);
   const verified=await run(process.execPath,['scripts/backup.mjs','--verify',f.outputDir],options);assert.match(verified.stdout,/Backup verified:/);
   const target=join(f.dir,'cli-restored/cms.sqlite'),targetMedia=join(f.dir,'cli-restored/media');
-  const restored=await run(process.execPath,['scripts/restore.mjs',f.outputDir],{...options,env:{...options.env,CMS_DB_PATH:target,CMS_MEDIA_DIR:targetMedia}});assert.match(restored.stdout,/Restored and verified:/);assert.deepEqual(await readFile(join(targetMedia,`${f.image.id}.png`)),png);
+  const restored=await run(process.execPath,['scripts/restore.mjs',f.outputDir],{...options,env:{...options.env,CMS_DB_PATH:target,CMS_MEDIA_DIR:targetMedia}});assert.match(restored.stdout,/Restored and verified:/);assert.deepEqual(await readFile(join(targetMedia,`${f.image.id}.png`)),f.storedImage);
 });

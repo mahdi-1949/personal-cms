@@ -2,49 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdir,writeFile,unlink,readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HttpError,listContent } from './content.mjs';
+import { processImage } from './image-processing.mjs';
 
 export const MAX_IMAGE_BYTES=5*1024*1024;
-const PNG_SIGNATURE=Buffer.from([137,80,78,71,13,10,26,10]);
-function pngSize(buffer) {
-  if(buffer.length<45 || !buffer.subarray(0,8).equals(PNG_SIGNATURE) || buffer.readUInt32BE(8)!==13 || buffer.toString('ascii',12,16)!=='IHDR')return null;
-  let offset=8,ended=false,hasData=false;
-  while(offset+12<=buffer.length) {
-    const size=buffer.readUInt32BE(offset),type=buffer.toString('ascii',offset+4,offset+8);
-    if(size>buffer.length-offset-12)return null;
-    if(type==='IDAT')hasData=true;
-    offset+=12+size;
-    if(type==='IEND'){ended=size===0 && offset===buffer.length;break;}
-  }
-  return ended && hasData?{width:buffer.readUInt32BE(16),height:buffer.readUInt32BE(20)}:null;
-}
-function jpegSize(buffer) {
-  if(buffer.length<4 || buffer[0]!==0xff || buffer[1]!==0xd8 || buffer[buffer.length-2]!==0xff || buffer[buffer.length-1]!==0xd9)return null;
-  let offset=2;
-  while(offset+4<=buffer.length) {
-    if(buffer[offset++]!==0xff)return null;
-    while(buffer[offset]===0xff)offset++;
-    const marker=buffer[offset++];
-    if(marker===0xda || marker===0xd9)return null;
-    const size=buffer.readUInt16BE(offset);
-    if(size<2 || offset+size>buffer.length)return null;
-    if([0xc0,0xc1,0xc2].includes(marker)) {
-      if(size<8)return null;
-      return {height:buffer.readUInt16BE(offset+3),width:buffer.readUInt16BE(offset+5)};
-    }
-    offset+=size;
-  }
-  return null;
-}
-export function validateImage(buffer,mime) {
-  if(!buffer.length || buffer.length>MAX_IMAGE_BYTES)throw new HttpError(413,'حداکثر حجم تصویر ۵ مگابایت است.');
-  const size=mime==='image/png'?pngSize(buffer):mime==='image/jpeg'?jpegSize(buffer):null;
-  if(!size || size.width<1 || size.height<1 || size.width*size.height>16000000)throw new HttpError(422,'فقط PNG یا JPEG معتبر با حداکثر ۱۶ میلیون پیکسل مجاز است.');
-  return {...size,extension:mime==='image/png'?'png':'jpg'};
-}
 export const mediaPath=(dir,item)=>join(dir,`${item.id}.${item.mime==='image/png'?'png':'jpg'}`);
 export const listMedia=db=>db.prepare('SELECT * FROM media ORDER BY created_at DESC').all();
 export async function uploadMedia(db,dir,buffer,{mime,filename,userId,authorize}) {
-  const dimensions=validateImage(buffer,mime);
+  const dimensions=await processImage(buffer,mime);
+  buffer=dimensions.buffer;
   if(typeof filename!=='string' || !filename.trim() || filename.length>200 || /[\x00-\x1f]/.test(filename))throw new HttpError(422,'نام تصویر معتبر نیست.');
   const id=randomUUID(),now=new Date().toISOString();const item={id,mime};
   await mkdir(dir,{recursive:true,mode:0o700});const path=mediaPath(dir,item);

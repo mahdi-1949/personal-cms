@@ -12,5 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run check
       - run: npm test

@@ -1,5 +1,6 @@
 import { createAuthoring } from './authoring.js';
 import { createOperations } from './operations.js';
+import { createSecurity } from './security.js';
 const $=selector=>document.querySelector(selector);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state={csrf:'',user:null,site:null,modules:[],content:[],media:[],categories:[],menu:null,view:'dashboard',editing:null};
@@ -11,16 +12,17 @@ async function api(path,method='GET',body){
   const data=await response.json();
   if(!response.ok){if(response.status===401 && path!=='/auth/login')showLogin();throw new Error(data.error||'خطای ارتباط با سرور');}return data;
 }
-function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();authoring.reset();operations.reset();}
+function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();authoring.reset();operations.reset();security.reset();}
 async function load(){
   const me=await api('/auth/me');state.user=me.user;state.csrf=me.csrf;
+  if(me.user.mfaRequired){state.view='security';state.site=null;state.content=[];state.modules=[];state.media=[];$('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent='Core CMS';renderNavigation();render();return;}
   const [settings,registry,content,media,menu,categories]=await Promise.all([api('/settings'),api('/modules'),api('/content'),api('/media'),api('/navigation'),api('/categories')]);
   state.site=settings;state.modules=registry.modules;state.content=content.content;state.media=media.media;state.menu=menu;state.categories=categories.categories;
   $('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent=state.site.name;
   renderNavigation();render();
 }
 function renderNavigation(){
-  const items=[{key:'dashboard',label:'نمای کلی'},...state.modules.filter(m=>state.site.enabledModules.includes(m.key)),{key:'media',label:'تصاویر'},...(state.user.role==='admin'?[{key:'categories',label:'دسته‌های مقاله'},{key:'messages',label:'پیام‌های تماس'},{key:'redirects',label:'ریدایرکت‌ها'},{key:'backup',label:'بکاپ و بازیابی'},{key:'navigation',label:'منوی سایت'},{key:'users',label:'کاربران'},{key:'modules',label:'ماژول‌ها'},{key:'settings',label:'تنظیمات سایت'}]:[]),{key:'account',label:'حساب من'}];
+  const items=state.user.mfaRequired?[{key:'security',label:'امنیت حساب'}]:[{key:'dashboard',label:'نمای کلی'},...state.modules.filter(m=>state.site.enabledModules.includes(m.key)),{key:'media',label:'تصاویر'},...(state.user.role==='admin'?[{key:'audit',label:'گزارش رخدادها'},{key:'categories',label:'دسته‌های مقاله'},{key:'messages',label:'پیام‌های تماس'},{key:'redirects',label:'ریدایرکت‌ها'},{key:'backup',label:'بکاپ و بازیابی'},{key:'navigation',label:'منوی سایت'},{key:'users',label:'کاربران'},{key:'modules',label:'ماژول‌ها'},{key:'settings',label:'تنظیمات سایت'}]:[]),{key:'account',label:'حساب من'},{key:'security',label:'امنیت حساب'}];
   $('#navigation').innerHTML=items.map(item=>`<button data-view="${esc(item.key)}" class="${item.key===state.view?'active':''}">${esc(item.label)}</button>`).join('');
   $('#navigation').querySelectorAll('button').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;renderNavigation();render();});
 }
@@ -36,7 +38,8 @@ function bindRows(){
   });
 }
 function render(){
-  const view=$('#view');const enabled=state.content.filter(item=>state.site.enabledModules.includes(item.kind));
+  const view=$('#view');if(security.render(view))return;
+  const enabled=state.content.filter(item=>state.site.enabledModules.includes(item.kind));
   if(operations.render(view) || authoring.render(view))return;
   if(state.view==='dashboard'){
     view.innerHTML=heading('نمای کلی','وضعیت محتوا و فعالیت‌های سایت')+`<div class="welcome"><p class="eyebrow">یک هسته؛ امکان‌های تازه</p><h2>سایت شما از همین‌جا رشد می‌کند.</h2><p>صفحات را بسازید، خدمات را معرفی کنید و محتوای تازه منتشر کنید. ماژول‌های هر پروژه با نیاز همان کسب‌وکار فعال می‌شوند.</p><a href="/" target="_blank" rel="noopener">مشاهده خروجی سایت ↗</a></div><div class="stats"><div class="stat"><span>کل محتوا</span><strong>${number(enabled.length)}</strong></div><div class="stat"><span>منتشرشده</span><strong>${number(enabled.filter(i=>i.status==='published').length)}</strong></div><div class="stat"><span>پیش‌نویس‌ها</span><strong>${number(enabled.filter(i=>i.status==='draft').length)}</strong></div><div class="stat"><span>ماژول‌های فعال</span><strong>${number(state.site.enabledModules.length)}</strong></div></div><h2>آخرین محتواها</h2>`+table(enabled.slice(0,6));bindRows();return;
@@ -78,4 +81,6 @@ for(const id of ['#close-editor','#cancel-editor'])$(id).onclick=()=>$('#editor-
 $('#logout').onclick=async()=>{try{await api('/auth/logout','POST',{});showLogin();}catch(error){toast(error.message);}};
 const authoring=createAuthoring({state,api,esc,toast,load,showLogin,heading,number});
 const operations=createOperations({state,api,esc,toast,load,heading,number});
-load().catch(error=>{showLogin();if(!error.message.includes('وارد شوید'))toast(error.message);});
+const security=createSecurity({state,api,esc,toast,showLogin,heading,number});
+security.init();
+if(!location.pathname.startsWith('/admin/reset-password'))load().catch(error=>{showLogin();if(!error.message.includes('وارد شوید'))toast(error.message);});

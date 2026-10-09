@@ -113,6 +113,6 @@ test('data survives reconnect; logout invalidates the session',async()=>{
 });
 
 test('failed logins are throttled without disclosing whether an account exists',async()=>{
-  for(let i=0;i<5;i++){const result=await request('/api/auth/login',{method:'POST',body:{email:'missing@example.test',password:'wrong'}});assert.equal(result.status,401);assert.equal(result.data.error,'ایمیل یا رمز عبور صحیح نیست.');}
+  for(let i=0;i<5;i++){const result=await request('/api/auth/login',{method:'POST',body:{email:'missing@example.test',password:'wrong'}});assert.equal(result.status,401);assert.equal(result.data.error,'ایمیل، رمز یا کد دومرحله‌ای صحیح نیست.');}
   assert.equal((await request('/api/auth/login',{method:'POST',body:{email:'missing@example.test',password:'wrong'}})).status,429);
 });

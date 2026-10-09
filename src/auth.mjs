@@ -8,14 +8,17 @@ export function validatePassword(password) {
 export async function hashPassword(password) {
   validatePassword(password);
   const salt = randomBytes(16).toString('hex');
-  const hash = await scrypt(password, salt, 64, { N:16384, r:8, p:1 });
-  return `scrypt$${salt}$${hash.toString('hex')}`;
+  const hash = await scrypt(password, salt, 64, { N:32768, r:8, p:3, maxmem:64*1024*1024 });
+  return `scrypt$32768$8$3$${salt}$${hash.toString('hex')}`;
 }
 export async function verifyPassword(password, encoded) {
   if (typeof password !== 'string' || password.length > 256) return false;
-  const [algorithm, salt, expected] = encoded.split('$');
-  if (algorithm !== 'scrypt' || !salt || !/^[a-f0-9]{128}$/.test(expected)) return false;
-  const actual = await scrypt(password, salt, 64, { N:16384, r:8, p:1 });
+  if(typeof encoded!=='string')return false;
+  const parts=encoded.split('$');
+  const legacy=parts.length===3;
+  const [algorithm,salt,expected]=legacy?parts:[parts[0],parts[4],parts[5]];
+  if(algorithm!=='scrypt' || !/^[a-f0-9]{32}$/.test(salt) || !/^[a-f0-9]{128}$/.test(expected) || (!legacy && (parts.length!==6 || parts.slice(1,4).join('$')!=='32768$8$3')))return false;
+  const actual = await scrypt(password, salt, 64, { N:legacy?16384:32768, r:8, p:legacy?1:3,maxmem:64*1024*1024 });
   return timingSafeEqual(actual, Buffer.from(expected,'hex'));
 }
 export async function createUser(db, { email, password, role='admin' }) {
@@ -39,17 +42,17 @@ export function createSession(db,userId) {
 export function getSession(db, req) {
   const token = (req.headers.cookie || '').split(';').map(part=>part.trim()).find(part=>part.startsWith('cms_session='))?.slice(12);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const row = db.prepare('SELECT s.*, u.email, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
+  const row = db.prepare('SELECT s.*, u.email, u.role, (u.mfa_secret IS NOT NULL) AS mfa_enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
   return row ? { ...row, token } : null;
 }
 export function cookie(token,secure=false,clear=false) {
   return `cms_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear?0:28800}${secure?'; Secure':''}`;
 }
-export function rateLimited(db,key) {
+export function rateLimited(db,key,maximum=5) {
   const now=Date.now();
   db.prepare('DELETE FROM login_attempts WHERE reset_at<=?').run(now);
   const record=db.prepare('SELECT * FROM login_attempts WHERE key=?').get(key);
-  if (record?.count >= 5) return true;
+  if (record?.count >= maximum) return true;
   db.prepare('INSERT INTO login_attempts VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1').run(key,now+15*60*1000);
   return false;
 }
