@@ -12,3 +12,5 @@
 .page-preview-dialog{width:calc(100vw - 32px);max-width:1400px}
 
 .block-order{display:flex;flex-wrap:wrap;gap:8px;padding:0;list-style:none}.block-order li{border:1px dashed #98b0bc;border-radius:8px;padding:8px 12px;background:#edf3f6;cursor:grab;max-width:250px;overflow-wrap:anywhere}
+
+.design-dialog .check-label{flex-wrap:wrap;overflow-wrap:anywhere}.design-dialog .check-label code{min-width:0}

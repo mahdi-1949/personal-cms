@@ -6,9 +6,10 @@ import { resolve,dirname,join,relative } from 'node:path';
 import { openDatabase } from './database.mjs';
 import { SCHEMA_VERSION } from './migrations.mjs';
 import { acquireDataLock } from './data-lock.mjs';
+import { extension,mediaExtensions } from './asset-types.mjs';
 
 const FORMAT='core-cms-backup-v1';
-const mediaName=/^[a-f0-9-]{36}\.(png|jpg)$/;
+const mediaName=/^[a-f0-9-]{36}\.(png|jpg|glb|woff)$/;
 async function exists(path){try{await lstat(path);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}}
 async function regular(path){const info=await lstat(path);if(!info.isFile() || info.isSymbolicLink())throw new Error(`Expected a regular file: ${path}`);return info;}
 async function directory(path){const info=await lstat(path);if(!info.isDirectory() || info.isSymbolicLink())throw new Error(`Expected a directory: ${path}`);}
@@ -36,8 +37,8 @@ function inspectDatabase(db) {
 }
 function mediaFiles(db,version) {
   return version<2?[]:db.prepare('SELECT id,mime,size FROM media ORDER BY id').all().map(item=>{
-    const name=`${item.id}.${item.mime==='image/png'?'png':'jpg'}`;
-    if(!mediaName.test(name) || !['image/png','image/jpeg'].includes(item.mime))throw new Error('Database contains invalid media metadata');
+    const name=`${item.id}.${extension(item)}`;
+    if(!mediaName.test(name) || !Object.hasOwn(mediaExtensions,item.mime))throw new Error('Database contains invalid media metadata');
     return {path:`media/${name}`,size:item.size};
   });
 }
@@ -62,7 +63,7 @@ export async function createBackup({dbPath,outputDir,mediaDir=join(dirname(resol
       await copyFile(source,target);await chmod(target,0o600);files[item.path]=await fingerprint(target);
       if(files[item.path].sha256!==fingerprintBefore.sha256)throw new Error('Media changed during backup');
     }
-    const manifest={format:FORMAT,cmsVersion:'0.6.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
+    const manifest={format:FORMAT,cmsVersion:'0.7.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
     await writeFile(join(staging,'manifest.json'),JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600});
     await verifyBackup(staging);if(await exists(output))throw new Error('Backup destination was created during backup');
     await rename(staging,output);return {output,files:Object.keys(files).length};

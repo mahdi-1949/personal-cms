@@ -30,7 +30,7 @@ export function getRevision(db,id,revisionId) {
 function validate(db,data) {
   if(typeof data.name!=='string' || !data.name.trim() || data.name.length>100)throw new HttpError(422,'نام طرح معتبر نیست.');
   for(const [key,max] of [['html',65536],['css',65536],['js',131072]])if(typeof data[key]!=='string' || Buffer.byteLength(data[key])>max)throw new HttpError(422,'حجم کد بیش از حد مجاز است: HTML/CSS هرکدام ۶۴ و JavaScript ۱۲۸ کیلوبایت.');
-  if(!Array.isArray(data.assets??[]) || (data.assets??[]).length>20 || (data.assets??[]).some(id=>typeof id!=='string' || !db.prepare('SELECT id FROM media WHERE id=?').get(id)))throw new HttpError(422,'تصاویر طرح معتبر نیست.');
+  if(!Array.isArray(data.assets??[]) || (data.assets??[]).length>20 || (data.assets??[]).some(id=>typeof id!=='string' || !db.prepare('SELECT id FROM media WHERE id=?').get(id)))throw new HttpError(422,'دارایی‌های طرح معتبر نیستند.');
   return {name:data.name.trim(),html:data.html,css:data.css,js:data.js,assets:[...new Set(data.assets??[])]};
 }
 export function saveDesign(db,data,actorId,id) {

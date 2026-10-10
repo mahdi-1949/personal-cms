@@ -19,7 +19,7 @@ async function load(){
   const me=await api('/auth/me');state.user=me.user;state.csrf=me.csrf;
   if(me.user.mfaRequired){state.view='security';state.site=null;state.content=[];state.modules=[];state.media=[];$('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent='Core CMS';renderNavigation();render();return;}
   const [settings,registry,content,media,menu,categories,templates,designs]=await Promise.all([api('/settings'),api('/modules'),api('/content'),api('/media'),api('/navigation'),api('/categories'),api('/templates'),api('/designs/options')]);
-  state.site=settings;state.modules=registry.modules;state.content=content.content;state.media=media.media;state.menu=menu;state.categories=categories.categories;state.templates=templates;state.designs=designs.designs;
+  state.site=settings;state.modules=registry.modules;state.content=content.content;state.assets=media.media;state.media=media.media.filter(m=>['image/png','image/jpeg'].includes(m.mime));state.menu=menu;state.categories=categories.categories;state.templates=templates;state.designs=designs.designs;
   $('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent=state.site.name;
   renderNavigation();render();
 }
