@@ -20,6 +20,11 @@ export function validateBlocks(db,blocks) {
   return blocks.map(block=>{
     if(!block || typeof block!=='object' || Array.isArray(block))throw new HttpError(422,'بلوک معتبر نیست.');
     switch(block.type) {
+      case 'code-design': {
+        if(typeof block.designId!=='string' || !db.prepare('SELECT id FROM designs WHERE id=?').get(block.designId))throw new HttpError(422,'یک طرح منتشرشده انتخاب کنید.');
+        if(!Number.isInteger(block.height) || block.height<200 || block.height>1200)throw new HttpError(422,'ارتفاع طرح باید بین ۲۰۰ تا ۱۲۰۰ پیکسل باشد.');
+        return {type:'code-design',designId:block.designId,height:block.height,title:text(block.title,200,true),fallback:text(block.fallback??'',2000)};
+      }
       case 'heading':
         if(![2,3].includes(block.level))throw new HttpError(422,'سطح عنوان باید ۲ یا ۳ باشد.');
         return {type:'heading',text:text(block.text,200,true),level:block.level};
@@ -37,7 +42,7 @@ export function validateBlocks(db,blocks) {
         return {type:'hero',variant:block.variant,title:text(block.title,200,true),text:text(block.text,2000),mediaId:mediaRef(db,block.mediaId),alt:text(block.alt??'',500),contentId,label:text(block.label??'',100,Boolean(contentId))};
       }
       case 'cards': {
-        if(!['grid','list'].includes(block.variant) || !Array.isArray(block.items) || !block.items.length || block.items.length>12)throw new HttpError(422,'طرح کارت‌ها و تعداد آن‌ها معتبر نیست.');
+        if(!['grid','list','process','testimonials','stats'].includes(block.variant) || !Array.isArray(block.items) || !block.items.length || block.items.length>12)throw new HttpError(422,'طرح کارت‌ها و تعداد آن‌ها معتبر نیست.');
         return {type:'cards',variant:block.variant,title:text(block.title??'',200),items:block.items.map(item=>{
           if(!item || typeof item!=='object' || Array.isArray(item))throw new HttpError(422,'کارت معتبر نیست.');
           return {title:text(item.title,200,true),text:text(item.text,2000),mediaId:mediaRef(db,item.mediaId),alt:text(item.alt??'',500),contentId:contentRef(db,item.contentId)};
@@ -54,8 +59,8 @@ export function validateBlocks(db,blocks) {
     }
   });
 }
-export function referencedMedia(items) {
-  return [...new Set(items.flatMap(item=>(item.blocks||[]).flatMap(block=>block.type==='cards'?block.items.map(card=>card.mediaId):['image','hero'].includes(block.type)?[block.mediaId]:[])).filter(Boolean))];
+export function referencedMedia(items,designs=[]) {
+  return [...new Set(items.flatMap(item=>(item.blocks||[]).flatMap(block=>block.type==='cards'?block.items.map(card=>card.mediaId):['image','hero'].includes(block.type)?[block.mediaId]:[])).concat(designs.flatMap(d=>d.assets||[])).filter(Boolean))];
 }
 export function validateMenu(db,data) {
   if(!Array.isArray(data.items) || data.items.length>12)throw new HttpError(422,'حداکثر ۱۲ لینک منو مجاز است.');

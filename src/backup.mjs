@@ -52,7 +52,7 @@ export async function createBackup({dbPath,outputDir,mediaDir=join(dirname(resol
     await mkdir(join(staging,'media'),{recursive:true,mode:0o700});
     const snapshot=join(staging,'cms.sqlite');await backup(db,snapshot);await chmod(snapshot,0o600);
     const copy=new DatabaseSync(snapshot);
-    try{copy.exec('DELETE FROM sessions; DELETE FROM login_attempts;');if(version>=3)copy.exec('DELETE FROM contact_tokens; DELETE FROM contact_limits;');if(version>=4)copy.exec('DELETE FROM password_resets; DELETE FROM mail_outbox; UPDATE users SET mfa_pending_secret=NULL,mfa_pending_expires=0;');copy.exec('VACUUM; PRAGMA journal_mode=DELETE;');inspectDatabase(copy);}finally{copy.close();}
+    try{copy.exec('DELETE FROM sessions; DELETE FROM login_attempts;');if(version>=3)copy.exec('DELETE FROM contact_tokens; DELETE FROM contact_limits;');if(version>=4)copy.exec('DELETE FROM password_resets; DELETE FROM mail_outbox; UPDATE users SET mfa_pending_secret=NULL,mfa_pending_expires=0;');if(version>=6)copy.exec('DELETE FROM design_previews;');copy.exec('VACUUM; PRAGMA journal_mode=DELETE;');inspectDatabase(copy);}finally{copy.close();}
     const files={'cms.sqlite':await fingerprint(snapshot)};
     const mediaEntries=mediaFiles(db,version);if(mediaEntries.length)await directory(media);
     for(const item of mediaEntries) {
@@ -62,7 +62,7 @@ export async function createBackup({dbPath,outputDir,mediaDir=join(dirname(resol
       await copyFile(source,target);await chmod(target,0o600);files[item.path]=await fingerprint(target);
       if(files[item.path].sha256!==fingerprintBefore.sha256)throw new Error('Media changed during backup');
     }
-    const manifest={format:FORMAT,cmsVersion:'0.5.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
+    const manifest={format:FORMAT,cmsVersion:'0.6.0',schemaVersion:version,createdAt:new Date().toISOString(),files};
     await writeFile(join(staging,'manifest.json'),JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600});
     await verifyBackup(staging);if(await exists(output))throw new Error('Backup destination was created during backup');
     await rename(staging,output);return {output,files:Object.keys(files).length};
@@ -111,7 +111,7 @@ export async function restoreBackup({inputDir,dbPath,mediaDir=join(dirname(resol
     if((await fingerprint(dbStage)).sha256!==manifest.files['cms.sqlite'].sha256)throw new Error('Backup changed during restore');
     for(const name of Object.keys(manifest.files).filter(name=>name.startsWith('media/')))if((await fingerprint(join(mediaStage,name.slice(6)))).sha256!==manifest.files[name].sha256)throw new Error('Backup media changed during restore');
     const db=openDatabase(dbStage);
-    try{db.exec('DELETE FROM sessions; DELETE FROM login_attempts; DELETE FROM contact_tokens; DELETE FROM contact_limits; DELETE FROM password_resets; DELETE FROM mail_outbox; UPDATE users SET mfa_pending_secret=NULL,mfa_pending_expires=0;');inspectDatabase(db);db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;');}finally{db.close();}
+    try{db.exec('DELETE FROM design_previews; DELETE FROM sessions; DELETE FROM login_attempts; DELETE FROM contact_tokens; DELETE FROM contact_limits; DELETE FROM password_resets; DELETE FROM mail_outbox; UPDATE users SET mfa_pending_secret=NULL,mfa_pending_expires=0;');inspectDatabase(db);db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;');}finally{db.close();}
     if(await exists(database) || await exists(media))throw new Error('Restore destination was created during restore');
     await rename(mediaStage,media);installedMedia=true;await rename(dbStage,database);installedDb=true;
     return {database,media,files:Object.keys(manifest.files).length};

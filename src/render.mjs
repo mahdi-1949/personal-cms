@@ -15,7 +15,7 @@ function layout({site,title,description,path,body,baseURL,basePath='',menu=[],sc
   const links=[...menu,...(site.contactEnabled?[{path:'/contact/',label:'تماس با ما'}]:[])].map(link=>`<a href="${escapeHTML(basePath+link.path)}">${escapeHTML(link.label)}</a>`).join('');
   const meta=preview?'<meta name="robots" content="noindex,nofollow,noarchive">':`<link rel="canonical" href="${escapeHTML(baseURL+path)}"><meta property="og:title" content="${escapeHTML(title)}"><meta property="og:description" content="${escapeHTML(description)}"><meta property="og:url" content="${escapeHTML(baseURL+path)}"><meta property="og:type" content="website">`;
   const banner=preview?'<div class="preview-banner" role="status">پیش‌نمایش خصوصی آخرین نسخه ذخیره‌شده؛ این نمایش وضعیت انتشار صفحه را تغییر نمی‌دهد.</div>':'';
-  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}">${meta}<link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/theme.css">${scripts.map(script=>`<script type="module" src="${escapeHTML(basePath+script)}"></script>`).join('')}</head><body class="site-template-${theme.template}"><a class="skip-link" href="#main-content">رفتن به محتوای اصلی</a>${banner}<header class="site-header"><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a>${links?`<nav aria-label="منوی اصلی">${links}</nav>`:''}</header><main id="main-content">${body}</main><footer>${escapeHTML(site.name)}</footer></body></html>`;
+  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><meta name="description" content="${escapeHTML(description)}">${meta}<link rel="stylesheet" href="${escapeHTML(basePath)}/assets/site.css"><link rel="stylesheet" href="${escapeHTML(basePath)}/assets/theme.css">${scripts.map(script=>`<script type="module" src="${escapeHTML(basePath+script)}"></script>`).join('')}</head><body class="site-template-${theme.template} header-${theme.header}"><a class="skip-link" href="#main-content">رفتن به محتوای اصلی</a>${banner}<header class="site-header"><a class="brand" href="${escapeHTML(basePath)}/">${escapeHTML(site.name)}</a>${links?`<nav aria-label="منوی اصلی">${links}</nav>`:''}</header><main id="main-content">${body}</main><footer>${escapeHTML(site.name)}</footer></body></html>`;
 }
 function imageHTML(mediaId,alt,options,{eager=false}={}) {
   const image=options.media?.find(image=>image.id===mediaId);if(!image)return '';
@@ -29,6 +29,11 @@ function buttonHTML(contentId,label,options) {
 export function renderBlocks(item,options) {
   if(!item.blocks?.length)return `<div class="prose">${escapeHTML(item.body)}</div>`;
   return item.blocks.map(block=>{
+    if(block.type==='code-design') {
+      const source=options.designs?.find(d=>d.design_id===block.designId);
+      const path=source?.previewURL|| (source?`${options.basePath||''}/design-runtime/${source.design_id}/${source.id}/index.html`:'');
+      return `<section class="code-design"><h2>${escapeHTML(block.title)}</h2>${block.fallback?`<p class="prose">${escapeHTML(block.fallback)}</p>`:''}${path?`<iframe class="design-frame" src="${escapeHTML(path)}" title="${escapeHTML(block.title)}" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy" width="100%" height="${block.height}" allow="camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; fullscreen 'none'"></iframe>`:'<p class="design-unavailable">نمای اختصاصی در حال حاضر در دسترس نیست.</p>'}</section>`;
+    }
     if(block.type==='heading')return `<h${block.level}>${escapeHTML(block.text)}</h${block.level}>`;
     if(block.type==='paragraph')return `<div class="prose block-paragraph">${escapeHTML(block.text)}</div>`;
     if(block.type==='image') {

@@ -9,6 +9,8 @@ import { publicMenu,referencedMedia } from './blocks.mjs';
 import { listMedia,mediaPath } from './media.mjs';
 import { publicCategories,categoryPath } from './categories.mjs';
 import { publicRedirects } from './redirects.mjs';
+import { releasedDesigns } from './designs.mjs';
+import { runtimeDocument,runtimeBridge,vendorFiles,vendorSource } from './design-runtime.mjs';
 import { themeCSS } from './templates.mjs';
 import { siteURL,renderHome,renderContent,renderCategory,renderRedirect,renderNotFound,sitemap } from './render.mjs';
 export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirname(resolve(dbPath)),'media')}) {
@@ -24,13 +26,25 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
   const staging=`${output}.staging-${randomUUID()}`;
   const db=openDatabase(database);
   try {
-    const site=getSite(db);const items=publishedContent(db,site);const ids=referencedMedia(items);const media=listMedia(db).filter(image=>ids.includes(image.id));
+    const site=getSite(db);const items=publishedContent(db,site);const designs=releasedDesigns(db,items);const ids=referencedMedia(items,designs);const media=listMedia(db).filter(image=>ids.includes(image.id));
     const categories=publicCategories(db,items);const redirects=publicRedirects(db,items,categories);
-    const options={baseURL,basePath,items,media,categories,menu:publicMenu(db,items)};
+    const options={baseURL,basePath,items,media,designs,categories,menu:publicMenu(db,items)};
     const staticSite={...site,contactEnabled:false};
     await mkdir(join(staging,'assets'),{recursive:true});
     if(media.length)await mkdir(join(staging,'media'));
     for(const image of media)await copyFile(mediaPath(mediaDir,image),mediaPath(join(staging,'media'),image));
+    if(designs.length){
+      await mkdir(join(staging,'design-vendor'),{recursive:true});
+      await writeFile(join(staging,'_headers'),`${basePath}/design-runtime/*\n  Access-Control-Allow-Origin: *\n  Content-Security-Policy: sandbox allow-scripts; frame-ancestors ${new URL(baseURL).origin}\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n${basePath}/design-vendor/*\n  Access-Control-Allow-Origin: *\n  X-Content-Type-Options: nosniff\n`);
+      for(const name of vendorFiles)await writeFile(join(staging,'design-vendor',name),await vendorSource(name));
+      for(const design of designs){
+        const local=`design-runtime/${design.design_id}/${design.id}`,folder=join(staging,local),prefix=`${basePath}/${local}/`;
+        await mkdir(join(folder,'assets'),{recursive:true});
+        await writeFile(join(folder,'index.html'),runtimeDocument(design,{prefix,origin:new URL(baseURL).origin,basePath}));
+        await writeFile(join(folder,'entry.js'),design.js);await writeFile(join(folder,'style.css'),design.css);await writeFile(join(folder,'bridge.js'),runtimeBridge(design,prefix,media));
+        for(const image of media.filter(m=>design.assets.includes(m.id)))await copyFile(mediaPath(mediaDir,image),mediaPath(join(folder,'assets'),image));
+      }
+    }
     await writeFile(join(staging,'index.html'),renderHome(staticSite,items,options));
     await writeFile(join(staging,'404.html'),renderNotFound(staticSite,options));
     for(const item of items){const path=contentPath(item);if(path==='/')continue;const folder=join(staging,path.slice(1));await mkdir(folder,{recursive:true});await writeFile(join(folder,'index.html'),renderContent(staticSite,item,options));}
@@ -41,9 +55,9 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
     await writeFile(join(staging,'sitemap.xml'),sitemap(items,baseURL,categories.map(categoryPath)));
     await writeFile(join(staging,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${baseURL}/sitemap.xml\n`);
     await writeFile(join(staging,'.nojekyll'),'');
-    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.5.0',exportedAt:new Date().toISOString()}));
+    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.6.0',exportedAt:new Date().toISOString()}));
     if(exists){const previous=`${output}.previous-${randomUUID()}`;await rename(output,previous);try{await rename(staging,output);}catch(error){await rename(previous,output);throw error;}await rm(previous,{recursive:true});}
     else await rename(staging,output);
-    return {output,count:items.length,warnings:site.contactEnabled?['Contact form is excluded from static export; it requires the Node.js backend.']:[]};
+    return {output,count:items.length,warnings:[...(site.contactEnabled?['Contact form is excluded from static export; it requires the Node.js backend.']:[]),...(designs.length?['Serve static code designs on a separate origin from any authenticated CMS. Configure CORS for design JavaScript/vendor files and CSP sandbox allow-scripts for runtime HTML; see docs/DESIGN-WORKSPACE.fa.md.']:[])]};
   } finally {db.close();await rm(staging,{recursive:true,force:true});}
 }

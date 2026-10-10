@@ -5,10 +5,11 @@ export function createAuthoring({state,api,esc,toast,load,showLogin,heading,numb
   const contentOptions=selected=>'<option value="">انتخاب صفحه</option>'+state.content.filter(item=>state.site.enabledModules.includes(item.kind)).map(item=>`<option value="${esc(item.id)}" ${selected===item.id?'selected':''}>${esc(item.title)}${item.status==='draft'?' (پیش‌نویس)':''}</option>`).join('');
   const mediaOptions=selected=>'<option value="">انتخاب تصویر</option>'+state.media.map(item=>`<option value="${esc(item.id)}" ${selected===item.id?'selected':''}>${esc(item.filename)}</option>`).join('');
   const sections=createSectionEditor({esc,toast,contentOptions,mediaOptions});
-  let blocks=[];let menu=[];
+  let blocks=[];let menu=[];let undoBlocks=null;
   function readBlocks(){
     blocks=[...$('#block-list').querySelectorAll('[data-block]')].map(row=>{
       const type=row.dataset.type;const val=name=>row.querySelector(`[data-field="${name}"]`).value;
+      if(type==='code-design')return {type,designId:val('designId'),height:Number(val('height')),title:val('title'),fallback:val('fallback')};
       if(type==='heading')return {type,text:val('text'),level:Number(val('level'))};
       if(type==='paragraph')return {type,text:val('text')};
       if(type==='image')return {type,mediaId:val('mediaId'),alt:val('alt'),caption:val('caption')};
@@ -17,38 +18,42 @@ export function createAuthoring({state,api,esc,toast,load,showLogin,heading,numb
     });return blocks;
   }
   function renderBlocks(){
+    $('#block-order').innerHTML=blocks.map((b,i)=>`<li draggable="true" data-order-drag="${i}" data-order-target="${i}">${number(i+1)} · ${esc(b.title||b.text?.slice(0,25)||({hero:'معرفی',cards:'کارت‌ها',faq:'پرسش‌ها','code-design':'طرح با کد',image:'تصویر',cta:'دکمه',heading:'عنوان',paragraph:'متن'}[b.type]))}</li>`).join('');
     $('#block-list').innerHTML=blocks.map((block,index)=>{
-      const labels={heading:'عنوان',paragraph:'متن',image:'تصویر',cta:'دکمه',hero:'معرفی',cards:'کارت‌ها',faq:'پرسش‌های متداول'};
+      const labels={heading:'عنوان',paragraph:'متن',image:'تصویر',cta:'دکمه',hero:'معرفی',cards:'کارت‌ها',faq:'پرسش‌های متداول','code-design':'طرح با کد'};
       let fields;
+      if(block.type==='code-design')fields=`<label>طرح منتشرشده<select data-field="designId" required><option value="">انتخاب طرح</option>${state.designs.map(d=>`<option value="${esc(d.id)}" ${d.id===block.designId?'selected':''}>${esc(d.name)} · نسخه ${d.publishedNumber}</option>`).join('')}${block.designId && !state.designs.some(d=>d.id===block.designId)?`<option value="${esc(block.designId)}" selected>طرح بدون نسخه عمومی</option>`:''}</select></label><label>عنوان بخش، برای دسترسی‌پذیری و سئو<input data-field="title" value="${esc(block.title)}" maxlength="200" required></label><label>توضیح جایگزین<textarea data-field="fallback" maxlength="2000">${esc(block.fallback)}</textarea></label><label>ارتفاع قاب (۲۰۰ تا ۱۲۰۰ پیکسل)<input data-field="height" type="number" min="200" max="1200" value="${block.height||560}" required></label><p class="muted">نسخه منتشرشده طرح نمایش داده می‌شود؛ تغییر پیش‌نویس کد، صفحه عمومی را تغییر نمی‌دهد.</p>`;
       if(block.type==='heading')fields=`<label>عنوان<input data-field="text" value="${esc(block.text)}" maxlength="200" required></label><label>سطح عنوان<select data-field="level"><option value="2" ${block.level===2?'selected':''}>عنوان اصلی بخش</option><option value="3" ${block.level===3?'selected':''}>زیرعنوان</option></select></label>`;
       if(block.type==='paragraph')fields=`<label>متن<textarea data-field="text" maxlength="10000" rows="4" required>${esc(block.text)}</textarea></label>`;
       if(block.type==='image')fields=`<label>تصویر<select data-field="mediaId" required>${mediaOptions(block.mediaId)}</select></label><label>متن جایگزین<input data-field="alt" value="${esc(block.alt)}" maxlength="500"></label><label>توضیح زیر تصویر<input data-field="caption" value="${esc(block.caption)}" maxlength="500"></label>`;
       if(block.type==='cta')fields=`<label>متن دکمه<input data-field="label" value="${esc(block.label)}" maxlength="100" required></label><label>صفحه مقصد<select data-field="contentId" required>${contentOptions(block.contentId)}</select></label>`;
       if(['hero','cards','faq'].includes(block.type))fields=sections.fields(block);
-      return `<section class="block-card" data-block="${index}" data-type="${esc(block.type)}"><div class="block-heading"><strong>${labels[block.type]} · ${number(index+1)}</strong><div><button type="button" class="ghost" data-move="${index}" data-direction="-1" aria-label="انتقال بلوک به بالا" ${index===0?'disabled':''}>↑</button><button type="button" class="ghost" data-move="${index}" data-direction="1" aria-label="انتقال بلوک به پایین" ${index===blocks.length-1?'disabled':''}>↓</button><button type="button" class="ghost danger" data-remove="${index}">حذف</button></div></div>${fields}</section>`;
+      return `<section class="block-card" data-block="${index}" data-type="${esc(block.type)}"><div class="block-heading"><strong draggable="true" data-drag-block="${index}" title="برای تغییر ترتیب بکشید">${labels[block.type]} · ${number(index+1)}</strong><div><button type="button" class="ghost" data-move="${index}" data-direction="-1" aria-label="انتقال بلوک به بالا" ${index===0?'disabled':''}>↑</button><button type="button" class="ghost" data-move="${index}" data-direction="1" aria-label="انتقال بلوک به پایین" ${index===blocks.length-1?'disabled':''}>↓</button><button type="button" class="ghost danger" data-remove="${index}">حذف</button></div></div>${fields}</section>`;
     }).join('');
     $('#block-list').querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{readBlocks();blocks.splice(Number(button.dataset.remove),1);renderBlocks();});
     $('#block-list').querySelectorAll('[data-move]').forEach(button=>button.onclick=()=>{readBlocks();const i=Number(button.dataset.move),j=i+Number(button.dataset.direction);[blocks[i],blocks[j]]=[blocks[j],blocks[i]];renderBlocks();});
+    document.querySelectorAll('[data-drag-block],[data-order-drag]').forEach(handle=>handle.ondragstart=event=>{readBlocks();event.dataTransfer.setData('text/x-cms-block',handle.dataset.dragBlock??handle.dataset.orderDrag);event.dataTransfer.effectAllowed='move';});
+    document.querySelectorAll('[data-block],[data-order-target]').forEach(row=>{row.ondragover=event=>{if([...event.dataTransfer.types].includes('text/x-cms-block'))event.preventDefault();};row.ondrop=event=>{event.preventDefault();const raw=event.dataTransfer.getData('text/x-cms-block');if(!/^\d+$/.test(raw))return;const from=Number(raw),to=Number(row.dataset.block??row.dataset.orderTarget);if(from>=blocks.length || from===to)return;readBlocks();undoBlocks=structuredClone(blocks);const [block]=blocks.splice(from,1);blocks.splice(to,0,block);renderBlocks();};});
     sections.bind($('#block-list'),readBlocks,renderBlocks);
     $('#plain-body').hidden=blocks.length>0;$('#blocks-help').textContent=blocks.length?'محتوای صفحه از بلوک‌های زیر ساخته می‌شود.':'متن صفحه را بنویسید یا بلوک اضافه کنید.';
   }
   $('#block-tools').querySelectorAll('[data-add-block]').forEach(button=>button.onclick=()=>{
     readBlocks();if(blocks.length>=40){toast('حداکثر ۴۰ بلوک مجاز است.');return;}
     const type=button.dataset.addBlock;
-    blocks.push(['hero','cards','faq'].includes(type)?sections.blank(type):type==='heading'?{type,text:'',level:2}:type==='paragraph'?{type,text:''}:type==='image'?{type,mediaId:'',alt:'',caption:''}:{type,label:'',contentId:''});renderBlocks();
+    blocks.push(type==='code-design'?{type,designId:'',height:560,title:'',fallback:''}:['hero','cards','faq'].includes(type)?sections.blank(type):type==='heading'?{type,text:'',level:2}:type==='paragraph'?{type,text:''}:type==='image'?{type,mediaId:'',alt:'',caption:''}:{type,label:'',contentId:''});renderBlocks();
   });
 
   const userDialog=document.createElement('dialog');userDialog.id='user-dialog';
-  userDialog.innerHTML='<form id="user-form"><div class="dialog-heading"><h2 id="user-title">کاربر جدید</h2><button class="ghost" type="button" id="close-user">×</button></div><label>ایمیل<input name="email" type="email" dir="ltr" maxlength="254" required autocomplete="off"></label><label>نقش<select name="role"><option value="editor">نویسنده</option><option value="admin">مدیر</option></select></label><label>رمز عبور<input name="password" type="password" dir="ltr" autocomplete="new-password" minlength="12" maxlength="256"><small id="user-password-help"></small></label><label class="check-label"><input name="active" type="checkbox" checked>حساب فعال باشد</label><p>با ذخیره تغییرات حساب، نشست‌های قبلی آن کاربر بسته می‌شوند.</p><p id="user-error" role="alert"></p><button class="primary" type="submit">ذخیره کاربر</button></form>';
+  userDialog.innerHTML='<form id="user-form"><div class="dialog-heading"><h2 id="user-title">کاربر جدید</h2><button class="ghost" type="button" id="close-user">×</button></div><label>ایمیل<input name="email" type="email" dir="ltr" maxlength="254" required autocomplete="off"></label><label>نقش<select name="role"><option value="editor">نویسنده</option><option value="admin">مدیر</option></select></label><label>رمز عبور<input name="password" type="password" dir="ltr" autocomplete="new-password" minlength="12" maxlength="256"><small id="user-password-help"></small></label><label class="check-label"><input name="active" type="checkbox" checked>حساب فعال باشد</label><label class="check-label"><input name="designAccess" type="checkbox">دسترسی طراحی با کد برای نویسنده</label><p>مدیر همیشه به فضای طراحی دسترسی دارد. طراح می‌تواند پیش‌نویس و پیش‌نمایش بسازد؛ انتشار کد فقط برای مدیر است.</p><p>با ذخیره تغییرات حساب، نشست‌های قبلی آن کاربر بسته می‌شوند.</p><p id="user-error" role="alert"></p><button class="primary" type="submit">ذخیره کاربر</button></form>';
   document.body.append(userDialog);$('#close-user').onclick=()=>userDialog.close();let editingUser=null;
   function openUser(user){
     editingUser=user;const form=$('#user-form');form.reset();$('#user-error').textContent='';$('#user-title').textContent=user?'ویرایش کاربر':'کاربر جدید';
-    form.elements.email.value=user?.email||'';form.elements.role.value=user?.role||'editor';form.elements.active.checked=user?.active??true;form.elements.password.required=!user;
+    form.elements.email.value=user?.email||'';form.elements.role.value=user?.role||'editor';form.elements.active.checked=user?.active??true;form.elements.designAccess.checked=user?.designAccess??false;form.elements.password.required=!user;
     $('#user-password-help').textContent=user?'برای حفظ رمز فعلی، خالی بگذارید.':'حداقل ۱۲ کاراکتر.';userDialog.showModal();form.elements.email.focus();
   }
   $('#user-form').onsubmit=async event=>{
     event.preventDefault();const button=event.target.querySelector('[type=submit]');button.disabled=true;$('#user-error').textContent='';
-    const form=event.target;const data={email:form.elements.email.value,role:form.elements.role.value,password:form.elements.password.value,active:form.elements.active.checked,...(editingUser?{expected_updated_at:editingUser.updated_at}:{})};
+    const form=event.target;const data={email:form.elements.email.value,role:form.elements.role.value,password:form.elements.password.value,active:form.elements.active.checked,designAccess:form.elements.designAccess.checked,...(editingUser?{expected_updated_at:editingUser.updated_at}:{})};
     try{await api(editingUser?`/users/${editingUser.id}`:'/users',editingUser?'PUT':'POST',data);userDialog.close();form.reset();await load();toast('کاربر ذخیره شد.');}catch(error){$('#user-error').textContent=error.message;}finally{button.disabled=false;}
   };
   async function users(view){
@@ -56,7 +61,7 @@ export function createAuthoring({state,api,esc,toast,load,showLogin,heading,numb
     $('#new-user').onclick=()=>openUser(null);
     try{
       const result=await api('/users');if(state.view!=='users')return;
-      view.innerHTML=heading('کاربران','با غیرفعال‌کردن حساب، محتوای آن حفظ می‌شود.','<button id="new-user" class="primary">+ کاربر جدید</button>')+`<div class="table-wrap"><table><thead><tr><th>ایمیل</th><th>نقش</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>${result.users.map(user=>`<tr><td dir="ltr">${esc(user.email)}</td><td>${user.role==='admin'?'مدیر':'نویسنده'}</td><td><span class="badge ${user.active?'':'draft'}">${user.active?'فعال':'غیرفعال'}</span></td><td><button class="ghost" data-user="${esc(user.id)}">ویرایش</button></td></tr>`).join('')}</tbody></table></div>`;
+      view.innerHTML=heading('کاربران','با غیرفعال‌کردن حساب، محتوای آن حفظ می‌شود.','<button id="new-user" class="primary">+ کاربر جدید</button>')+`<div class="table-wrap"><table><thead><tr><th>ایمیل</th><th>نقش</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>${result.users.map(user=>`<tr><td dir="ltr">${esc(user.email)}</td><td>${user.role==='admin'?'مدیر':user.designAccess?'نویسنده / طراح':'نویسنده'}</td><td><span class="badge ${user.active?'':'draft'}">${user.active?'فعال':'غیرفعال'}</span></td><td><button class="ghost" data-user="${esc(user.id)}">ویرایش</button></td></tr>`).join('')}</tbody></table></div>`;
       $('#new-user').onclick=()=>openUser(null);view.querySelectorAll('[data-user]').forEach(button=>button.onclick=()=>openUser(result.users.find(user=>user.id===button.dataset.user)));
     }catch(error){toast(error.message);}
   }
@@ -107,7 +112,13 @@ export function createAuthoring({state,api,esc,toast,load,showLogin,heading,numb
     }catch(error){toast(error.message);}
   }
   return {
-    openBlocks(item){blocks=structuredClone(item?.blocks||[]);renderBlocks();},
+    openBlocks(item){undoBlocks=null;
+      $('#page-preset').innerHTML='<option value="">انتخاب طرح کامل صفحه</option>'+state.templates.pagePresets.filter(p=>p.kinds.includes(state.editorKind)).map(p=>`<option value="${p.key}">${esc(p.label)}</option>`).join('');
+      $('#section-preset').innerHTML='<option value="">انتخاب بخش آماده</option>'+state.templates.sectionPresets.map(p=>`<option value="${p.key}">${esc(p.label)}</option>`).join('');
+      $('#apply-page-preset').onclick=()=>{const preset=state.templates.pagePresets.find(p=>p.key===$('#page-preset').value);if(!preset)return;readBlocks();if(blocks.length && !confirm('بلوک‌های فعلی با طرح انتخاب‌شده جایگزین شوند؟'))return;undoBlocks=structuredClone(blocks);blocks=structuredClone(preset.blocks);$('#editor-form').elements.template.value=preset.template;renderBlocks();};
+      $('#apply-section-preset').onclick=()=>{const preset=state.templates.sectionPresets.find(p=>p.key===$('#section-preset').value);if(!preset)return;readBlocks();if(blocks.length+preset.blocks.length>40){toast('حداکثر ۴۰ بلوک مجاز است.');return;}undoBlocks=structuredClone(blocks);blocks.push(...structuredClone(preset.blocks));renderBlocks();};
+      $('#undo-block-change').onclick=()=>{if(!undoBlocks)return;const previous=readBlocks();blocks=undoBlocks;undoBlocks=structuredClone(previous);renderBlocks();};
+      blocks=structuredClone(item?.blocks||[]);renderBlocks();},
     collectBlocks:readBlocks,
     reset(){userDialog.close();$('#user-form').reset();},
     render(view){

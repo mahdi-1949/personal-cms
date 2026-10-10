@@ -4,11 +4,12 @@ import { HttpError } from './content.mjs';
 import { cancelResets } from './mail.mjs';
 import { consumeFactor } from './account-security.mjs';
 import { recordAudit } from './audit.mjs';
-const publicUser=user=>({id:user.id,email:user.email,role:user.role,active:Boolean(user.active),created_at:user.created_at,updated_at:user.updated_at,mfaEnabled:Boolean(user.mfa_secret)});
+const publicUser=user=>({id:user.id,email:user.email,role:user.role,active:Boolean(user.active),created_at:user.created_at,updated_at:user.updated_at,mfaEnabled:Boolean(user.mfa_secret),designAccess:Boolean(user.design_access),canDesign:user.role==='admin' || Boolean(user.design_access)});
 export const listUsers=db=>db.prepare('SELECT * FROM users ORDER BY created_at').all().map(publicUser);
 function validateIdentity(data) {
   if(typeof data.email!=='string' || data.email.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim()))throw new HttpError(422,'ایمیل معتبر وارد کنید.');
   if(!['admin','editor'].includes(data.role) || typeof data.active!=='boolean')throw new HttpError(422,'نقش و وضعیت معتبر وارد کنید.');
+  if(data.designAccess!==undefined && typeof data.designAccess!=='boolean')throw new HttpError(422,'دسترسی طراحی معتبر نیست.');
   return {...data,email:data.email.trim().toLowerCase()};
 }
 async function passwordHash(password){try{return await hashPassword(password);}catch(error){throw new HttpError(422,error.message);}}
@@ -19,7 +20,7 @@ export async function addUser(db,data,actorId) {
   const hash=await passwordHash(data.password);requireAdmin(db,actorId);
   try{
     const id=randomUUID(),now=new Date().toISOString();
-    db.prepare('INSERT INTO users(id,email,password_hash,role,created_at,updated_at,active) VALUES(?,?,?,?,?,?,?)').run(id,data.email,hash,data.role,now,now,Number(data.active));
+    db.prepare('INSERT INTO users(id,email,password_hash,role,created_at,updated_at,active,design_access) VALUES(?,?,?,?,?,?,?,?)').run(id,data.email,hash,data.role,now,now,Number(data.active),Number(data.designAccess??false));
     return publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(id));
   }catch(error){if(error.code?.startsWith('ERR_SQLITE') && db.prepare('SELECT id FROM users WHERE email=?').get(data.email))throw new HttpError(409,'این ایمیل قبلاً ثبت شده است.');throw error;}
 }
@@ -36,7 +37,7 @@ export async function updateUser(db,id,data,actorId) {
     if(duplicate)throw new HttpError(409,'این ایمیل قبلاً ثبت شده است.');
     if(user.role==='admin' && user.active && (data.role!=='admin' || !data.active) && db.prepare("SELECT COUNT(*) AS count FROM users WHERE active=1 AND role='admin'").get().count<=1)throw new HttpError(409,'آخرین مدیر فعال را نمی‌توان غیرفعال کرد یا نقش او را تغییر داد.');
     const now=new Date(Math.max(Date.now(),Date.parse(user.updated_at)+1)).toISOString();
-    db.prepare('UPDATE users SET email=?,role=?,active=?,password_hash=?,updated_at=? WHERE id=?').run(data.email,data.role,Number(data.active),hash||user.password_hash,now,id);
+    db.prepare('UPDATE users SET email=?,role=?,active=?,password_hash=?,updated_at=?,design_access=? WHERE id=?').run(data.email,data.role,Number(data.active),hash||user.password_hash,now,Number(data.designAccess??Boolean(user.design_access)),id);
     // Credential or privilege changes invalidate every existing session.
     db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);cancelResets(db,id);
     db.prepare('UPDATE users SET mfa_pending_secret=NULL,mfa_pending_expires=0 WHERE id=?').run(id);

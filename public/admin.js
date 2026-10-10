@@ -1,3 +1,4 @@
+import { createDesigner } from './designer.js';
 import { createTemplates } from './templates.js';
 import { createAuthoring } from './authoring.js';
 import { createOperations } from './operations.js';
@@ -11,19 +12,19 @@ function toast(message){$('#notice').textContent=message;$('#notice').hidden=fal
 async function api(path,method='GET',body){
   const response=await fetch(`/api${path}`,{method,credentials:'same-origin',headers:{'Content-Type':'application/json',...(state.csrf?{'X-CSRF-Token':state.csrf}:{})},...(body?{body:JSON.stringify(body)}:{})});
   const data=await response.json();
-  if(!response.ok){if(response.status===401 && path!=='/auth/login')showLogin();throw new Error(data.error||'خطای ارتباط با سرور');}return data;
+  if(!response.ok){if(response.status===401 && path!=='/auth/login')showLogin();const error=new Error(data.error||'خطای ارتباط با سرور');error.status=response.status;throw error;}return data;
 }
-function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();authoring.reset();operations.reset();security.reset();}
+function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();authoring.reset();operations.reset();security.reset();designer.reset();}
 async function load(){
   const me=await api('/auth/me');state.user=me.user;state.csrf=me.csrf;
   if(me.user.mfaRequired){state.view='security';state.site=null;state.content=[];state.modules=[];state.media=[];$('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent='Core CMS';renderNavigation();render();return;}
-  const [settings,registry,content,media,menu,categories,templates]=await Promise.all([api('/settings'),api('/modules'),api('/content'),api('/media'),api('/navigation'),api('/categories'),api('/templates')]);
-  state.site=settings;state.modules=registry.modules;state.content=content.content;state.media=media.media;state.menu=menu;state.categories=categories.categories;state.templates=templates;
+  const [settings,registry,content,media,menu,categories,templates,designs]=await Promise.all([api('/settings'),api('/modules'),api('/content'),api('/media'),api('/navigation'),api('/categories'),api('/templates'),api('/designs/options')]);
+  state.site=settings;state.modules=registry.modules;state.content=content.content;state.media=media.media;state.menu=menu;state.categories=categories.categories;state.templates=templates;state.designs=designs.designs;
   $('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent=state.site.name;
   renderNavigation();render();
 }
 function renderNavigation(){
-  const items=state.user.mfaRequired?[{key:'security',label:'امنیت حساب'}]:[{key:'dashboard',label:'نمای کلی'},...state.modules.filter(m=>state.site.enabledModules.includes(m.key)),{key:'media',label:'تصاویر'},...(state.user.role==='admin'?[{key:'templates',label:'قالب و ظاهر سایت'},{key:'audit',label:'گزارش رخدادها'},{key:'categories',label:'دسته‌های مقاله'},{key:'messages',label:'پیام‌های تماس'},{key:'redirects',label:'ریدایرکت‌ها'},{key:'backup',label:'بکاپ و بازیابی'},{key:'navigation',label:'منوی سایت'},{key:'users',label:'کاربران'},{key:'modules',label:'ماژول‌ها'},{key:'settings',label:'تنظیمات سایت'}]:[]),{key:'account',label:'حساب من'},{key:'security',label:'امنیت حساب'}];
+  const items=state.user.mfaRequired?[{key:'security',label:'امنیت حساب'}]:[{key:'dashboard',label:'نمای کلی'},...state.modules.filter(m=>state.site.enabledModules.includes(m.key)),{key:'media',label:'تصاویر'},...(state.user.canDesign?[{key:'designer',label:'فضای کار طراح'}]:[]),...(state.user.role==='admin'?[{key:'templates',label:'قالب و ظاهر سایت'},{key:'audit',label:'گزارش رخدادها'},{key:'categories',label:'دسته‌های مقاله'},{key:'messages',label:'پیام‌های تماس'},{key:'redirects',label:'ریدایرکت‌ها'},{key:'backup',label:'بکاپ و بازیابی'},{key:'navigation',label:'منوی سایت'},{key:'users',label:'کاربران'},{key:'modules',label:'ماژول‌ها'},{key:'settings',label:'تنظیمات سایت'}]:[]),{key:'account',label:'حساب من'},{key:'security',label:'امنیت حساب'}];
   $('#navigation').innerHTML=items.map(item=>`<button data-view="${esc(item.key)}" class="${item.key===state.view?'active':''}">${esc(item.label)}</button>`).join('');
   $('#navigation').querySelectorAll('button').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;renderNavigation();render();});
 }
@@ -41,7 +42,7 @@ function bindRows(){
 function render(){
   const view=$('#view');if(security.render(view))return;
   const enabled=state.content.filter(item=>state.site.enabledModules.includes(item.kind));
-  if(templates.render(view) || operations.render(view) || authoring.render(view))return;
+  if(designer.render(view) || templates.render(view) || operations.render(view) || authoring.render(view))return;
   if(state.view==='dashboard'){
     view.innerHTML=heading('نمای کلی','وضعیت محتوا و فعالیت‌های سایت')+`<div class="welcome"><p class="eyebrow">یک هسته؛ امکان‌های تازه</p><h2>سایت شما از همین‌جا رشد می‌کند.</h2><p>صفحات را بسازید، خدمات را معرفی کنید و محتوای تازه منتشر کنید. ماژول‌های هر پروژه با نیاز همان کسب‌وکار فعال می‌شوند.</p><a href="/" target="_blank" rel="noopener">مشاهده خروجی سایت ↗</a></div><div class="stats"><div class="stat"><span>کل محتوا</span><strong>${number(enabled.length)}</strong></div><div class="stat"><span>منتشرشده</span><strong>${number(enabled.filter(i=>i.status==='published').length)}</strong></div><div class="stat"><span>پیش‌نویس‌ها</span><strong>${number(enabled.filter(i=>i.status==='draft').length)}</strong></div><div class="stat"><span>ماژول‌های فعال</span><strong>${number(state.site.enabledModules.length)}</strong></div></div><h2>آخرین محتواها</h2>`+table(enabled.slice(0,6));bindRows();return;
   }
@@ -80,6 +81,7 @@ $('#editor-form').onsubmit=async event=>{
 };
 for(const id of ['#close-editor','#cancel-editor'])$(id).onclick=()=>$('#editor-dialog').close();
 $('#logout').onclick=async()=>{try{await api('/auth/logout','POST',{});showLogin();}catch(error){toast(error.message);}};
+const designer=createDesigner({state,api,esc,toast,load,heading});
 const authoring=createAuthoring({state,api,esc,toast,load,showLogin,heading,number});
 const operations=createOperations({state,api,esc,toast,load,heading,number});
 const templates=createTemplates({state,api,esc,toast,load,heading});
