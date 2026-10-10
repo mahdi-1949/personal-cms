@@ -1,5 +1,16 @@
 # تغییرات
 
+## 0.6.0 — 2026-10-10
+
+- Designer workspace for browser HTML/CSS/JavaScript with opt-in editor access, autosave, bounded immutable history, restore, responsive isolated preview and bounded text console.
+- Admin-only release/rollback/unpublish with current password, MFA when enabled, CSRF/Origin, conflict checks, syntax-only child process and audited events.
+- Draft/public runtime separation, session-scoped hashed preview capabilities, iframe + HTTP CSP opaque-origin sandbox and scoped image assets.
+- Local pinned Three.js 0.186.1 and an actual WebGL hero sample with reduced-motion, pause, visibility, DPR limits, resize and no-WebGL fallback.
+- Code-design page block with public fallback, seven editable page/section presets, design tokens, header choices, drag ordering and responsive saved-page preview.
+- Schema 6 migration, design-aware media guards, backups preserving histories/releases and removing previews, public-only static export with hosting headers and Three license.
+- API/security/migration/backup/export tests and expanded Chromium smoke. GLB uploads, React/TSX build, arbitrary npm packages, content-page revision/autosave and real hosting remain future work.
+
+
 ## 0.5.0 — قالب، بخش‌ها و پیش‌نمایش
 
 - قالب‌های پایه شرکتی و خدماتی، رنگ برند و گوشه عناصر با حفظ داده و کنترل تعارض تغییر قالب.

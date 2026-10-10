@@ -42,7 +42,7 @@ export function createSession(db,userId) {
 export function getSession(db, req) {
   const token = (req.headers.cookie || '').split(';').map(part=>part.trim()).find(part=>part.startsWith('cms_session='))?.slice(12);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const row = db.prepare('SELECT s.*, u.email, u.role, (u.mfa_secret IS NOT NULL) AS mfa_enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
+  const row = db.prepare('SELECT s.*, u.email, u.role, u.design_access, (u.mfa_secret IS NOT NULL) AS mfa_enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
   return row ? { ...row, token } : null;
 }
 export function cookie(token,secure=false,clear=false) {

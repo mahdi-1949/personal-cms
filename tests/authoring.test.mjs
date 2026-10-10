@@ -50,7 +50,7 @@ test('v0.1 database upgrades twice without losing content, settings, hashes or s
   for(let i=0;i<2;i++){
     const db=openDatabase(legacy);
     try{
-      assert.equal(db.prepare('SELECT MAX(version) AS version FROM schema_versions').get().version,5);
+      assert.equal(db.prepare('SELECT MAX(version) AS version FROM schema_versions').get().version,6);
       assert.equal(db.prepare('SELECT * FROM content').get().body,'متن قدیمی');assert.equal(db.prepare('SELECT * FROM content').get().blocks,'[]');
       assert.equal(db.prepare('SELECT * FROM users').get().password_hash,hash);assert.equal(db.prepare('SELECT * FROM users').get().active,1);
       assert.match(db.prepare('SELECT * FROM sessions').get().session_id,/^[a-f0-9-]{36}$/);

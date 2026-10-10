@@ -12,7 +12,7 @@ export function listAudit(db,page=1) {
   return {events:db.prepare('SELECT a.*,u.email AS actor_email FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 50 OFFSET ?').all((page-1)*50),total:db.prepare('SELECT COUNT(*) AS n FROM audit_log').get().n,page,pageSize:50};
 }
 export function mutationEvent(method,path) {
-  const groups={content:'content',users:'user',media:'media',navigation:'navigation',settings:'settings',categories:'category',redirects:'redirect',messages:'message'};
+  const groups={content:'content',users:'user',media:'media',navigation:'navigation',settings:'settings',categories:'category',redirects:'redirect',messages:'message',designs:'design'};
   const match=path.match(/^\/api\/([a-z]+)(?:\/([a-f0-9-]{36}))?$/);
   if(match && groups[match[1]] && ['POST','PUT','DELETE'].includes(method))return `${groups[match[1]]}.${method==='POST'?'created':method==='DELETE'?'deleted':'updated'}`;
   if(path==='/api/auth/logout' && method==='POST')return 'auth.logout';

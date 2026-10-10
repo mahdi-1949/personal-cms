@@ -29,3 +29,6 @@ npm run dev
 پس از موفقیت تست‌ها و بررسی تغییرات، نسخه روی `main` تثبیت می‌شود و شماره نسخه و CHANGELOG به‌روز می‌شوند. استقرار روی هاست واقعی بعد از تکمیل مرحله عرضه در نقشه راه انجام خواهد شد. بکاپ و آزمون بازیابی بخشی از ارتقای سایت مشتری هستند.
 
 فایل دیتابیس، `.env` واقعی، اطلاعات مشتری و بکاپ وارد مخزن نمی‌شوند. نمونه داده باید ساختگی باشد. مشکل امنیتی را با داده حساس، رمز یا روش سوءاستفاده از سایت واقعی در بحث عمومی گزارش نکنید؛ ابتدا مسیر تماس خصوصی با مالک را هماهنگ کنید.
+
+
+The 0.6 designer runtime uses pinned Three.js served locally. Do not evaluate user code in Node or add allow-same-origin to design frames. Keep CSP sandbox on direct runtime documents, session-bound preview checks, public revision visibility, image references, backup scrubbing and export headers consistent. Browser smoke uses software WebGL flags for deterministic headless rendering; it does not disable browser origin security.

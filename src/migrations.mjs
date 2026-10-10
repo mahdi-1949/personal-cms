@@ -62,6 +62,18 @@ const migrations = [
     site.theme={template:'corporate',primaryColor:'#245c73',corners:'rounded'};site.theme_updated_at=new Date().toISOString();
     db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
   }},
+  { version:6, apply(db) {
+    db.exec(`
+      ALTER TABLE users ADD COLUMN design_access INTEGER NOT NULL DEFAULT 0 CHECK(design_access IN (0,1));
+      CREATE TABLE designs (id TEXT PRIMARY KEY, name TEXT NOT NULL, draft_id TEXT REFERENCES design_revisions(id), published_id TEXT REFERENCES design_revisions(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE design_revisions (id TEXT PRIMARY KEY, design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE, number INTEGER NOT NULL, html TEXT NOT NULL, css TEXT NOT NULL, js TEXT NOT NULL, assets TEXT NOT NULL DEFAULT '[]', created_by TEXT REFERENCES users(id), created_at TEXT NOT NULL, UNIQUE(design_id,number));
+      CREATE INDEX design_history ON design_revisions(design_id,number DESC);
+      CREATE TABLE design_previews (token_hash TEXT PRIMARY KEY, revision_id TEXT NOT NULL REFERENCES design_revisions(id) ON DELETE CASCADE, session_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE, expires_at INTEGER NOT NULL, released_only INTEGER NOT NULL DEFAULT 0 CHECK(released_only IN (0,1)));
+    `);
+    const site=JSON.parse(db.prepare("SELECT value FROM settings WHERE key='site'").get().value);
+    site.theme={font:'system',density:'normal',typeScale:'normal',header:'inline',...site.theme};
+    db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
+  }},
 ];
 
 export const SCHEMA_VERSION=migrations.at(-1).version;

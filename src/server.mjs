@@ -20,7 +20,11 @@ import { consumeFactor,assertSecurityKey,mfaStatus,startMfa,confirmMfa,changeMfa
 import { smtpMailer,mailWorker,enqueueMail,cancelResets } from './mail.mjs';
 import { recordAudit,listAudit,mutationEvent } from './audit.mjs';
 import { proxyList,clientIP } from './proxy.mjs';
-import { siteTemplates,pageTemplates,defaultPageTemplate,validateTheme,themeCSS } from './templates.mjs';
+import { siteTemplates,pageTemplates,defaultPageTemplate,validateTheme,themeCSS,templateLibrary } from './templates.mjs';
+import { designAPI } from './design-api.mjs';
+import { canDesign,releasedDesigns,previewRevision,publicRevision,issueDesignPreview } from './designs.mjs';
+import { runtimeDocument,runtimeBridge,runtimePolicy,vendorFiles,vendorSource } from './design-runtime.mjs';
+import { designPresets } from './design-presets.mjs';
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 
 function respond(res,status,body,type='application/json; charset=utf-8',extra={}) {
@@ -55,6 +59,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
   const release=acquireDataLock(dbPath);let db,dummyHash;
   try{db=openDatabase(dbPath);assertSecurityKey(db,key);dummyHash=await hashPassword(randomBytes(24).toString('hex'));}
   catch(error){db?.close();release();throw error;}
+  const requireDesignerForRequest=session=>{if(!canDesign(session) || (requireAdminMfa && session.role==='admin' && !session.mfa_enabled))throw new HttpError(403,'دسترسی طراحی معتبر نیست.');};
   const delivery=mailWorker(db,key,mailer);
   const notify=mailer&&key?(user,text)=>enqueueMail(db,key,'security_notice',{to:user.email,subject:'اطلاع امنیتی Core CMS',text}):undefined;
   const server=http.createServer(async(req,res)=>{
@@ -68,7 +73,29 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
       const url=new URL(req.url,origin);const path=url.pathname;const method=req.method==='HEAD'?'GET':req.method;res.cmsHead=req.method==='HEAD';
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method)) throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
       if(['POST','PUT','DELETE'].includes(method) && req.headers.origin!==origin) throw new HttpError(403,'مبدأ درخواست معتبر نیست.');
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.5.0'});
+      if(method==='GET' && path.startsWith('/design-vendor/')) {
+        const name=path.slice('/design-vendor/'.length);if(!vendorFiles.includes(name))throw new HttpError(404,'کتابخانه پیدا نشد.');
+        return respond(res,200,await vendorSource(name),name==='LICENSE.txt'?'text/plain; charset=utf-8':'text/javascript; charset=utf-8',{'Access-Control-Allow-Origin':'*'});
+      }
+      const runtime=path.match(/^\/(design-preview|design-runtime)\/([a-f0-9-]{36}|[a-f0-9]{64})(?:\/([a-f0-9-]{36}))?\/(index\.html|entry\.js|bridge\.js|style\.css|assets\/([a-f0-9-]{36})\.(png|jpg))$/);
+      if(runtime && method==='GET') {
+        const [,kind,id,revisionId,file,assetId,ext]=runtime;
+        if((kind==='design-preview' && revisionId) || (kind==='design-runtime' && !revisionId))throw new HttpError(404,'طرح پیدا نشد.');
+        const source=kind==='design-preview'?previewRevision(db,id,requireAdminMfa):publicRevision(db,id,revisionId);
+        const prefix=`/${kind}/${id}/${revisionId?revisionId+'/':''}`;
+        res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+        res.setHeader('X-Frame-Options','SAMEORIGIN');
+        res.setHeader('Content-Security-Policy',runtimePolicy(prefix,origin).policy+`; sandbox allow-scripts; frame-ancestors ${origin}`);
+        const extra={'Access-Control-Allow-Origin':'*'};
+        if(file==='index.html')return respond(res,200,runtimeDocument(source,{prefix,origin}),'text/html; charset=utf-8',extra);
+        if(file==='entry.js')return respond(res,200,source.js,'text/javascript; charset=utf-8',extra);
+        if(file==='bridge.js')return respond(res,200,runtimeBridge(source,prefix,listMedia(db)),'text/javascript; charset=utf-8',extra);
+        if(file==='style.css')return respond(res,200,source.css,'text/css; charset=utf-8',extra);
+        const image=db.prepare('SELECT * FROM media WHERE id=?').get(assetId);
+        if(!image || !source.assets.includes(assetId) || ext!==(image.mime==='image/png'?'png':'jpg'))throw new HttpError(404,'تصویر طرح پیدا نشد.');
+        return respond(res,200,await loadMedia(mediaDir,image),image.mime,extra);
+      }
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.6.0'});
       if(path==='/api/auth/options' && method==='GET')return respond(res,200,{passwordRecovery:Boolean(mailer&&key)});
       if(path==='/api/auth/forgot-password' && method==='POST') {
         if(!mailer || !key)throw new HttpError(503,'بازیابی رمز در حال حاضر در دسترس نیست.');
@@ -132,7 +159,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(mfaRequired && !['/api/auth/me','/api/auth/logout'].includes(path) && !path.startsWith('/api/auth/mfa'))throw new HttpError(403,'برای مدیریت سایت ابتدا ورود دومرحله‌ای را فعال کنید.');
         const event=mutationEvent(method,path);if(event)res.cmsAudit=body=>recordAudit(db,{event,actorId:session.user_id,targetId:typeof body?.id==='string'?body.id:path.match(/[a-f0-9-]{36}$/)?.[0]||null,ip});
         if(['POST','PUT','DELETE'].includes(method) && req.headers['x-csrf-token']!==session.csrf) throw new HttpError(403,'توکن درخواست معتبر نیست؛ صفحه را تازه کنید.');
-        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role,mfaEnabled:Boolean(session.mfa_enabled),mfaRequired},csrf:session.csrf});
+        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role,mfaEnabled:Boolean(session.mfa_enabled),mfaRequired,canDesign:canDesign(session)},csrf:session.csrf});
         if(path==='/api/auth/logout' && method==='POST') { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.token_hash);return respond(res,200,{ok:true},undefined,{'Set-Cookie':cookie('',secureCookies,true)}); }
         if(path==='/api/auth/password' && method==='PUT') {
           const attemptKey=digest(`password:${session.user_id}`);if(rateLimited(db,attemptKey))throw new HttpError(429,'تلاش‌های تغییر رمز زیاد است؛ بعداً امتحان کنید.');
@@ -159,6 +186,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           if(!result.changes)throw new HttpError(404,'نشست پیدا نشد.');
           return respond(res,200,{ok:true},undefined,sessionMatch[1]===session.session_id?{'Set-Cookie':cookie('',secureCookies,true)}:{});
         }
+        if(await designAPI({db,req,res,path,method,session,key,ip,readBody,respond,authorize:()=>{const current=requireSession(db,req);requireDesignerForRequest(current);return current;}}))return;
         if(path==='/api/users' || path.startsWith('/api/users/')) {
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند کاربران را مدیریت کند.');
           if(path==='/api/users' && method==='GET')return respond(res,200,{users:listUsers(db)});
@@ -223,7 +251,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند تصویر را حذف کند.');
           await deleteMedia(db,mediaDir,mediaMatch[1],await readBody(req));return respond(res,200,{ok:true});
         }
-        if(path==='/api/templates' && method==='GET')return respond(res,200,{siteTemplates,pageTemplates,defaults:Object.fromEntries(modules.map(item=>[item.key,defaultPageTemplate(item.key)]))});
+        if(path==='/api/templates' && method==='GET')return respond(res,200,{siteTemplates,pageTemplates,designPresets,...templateLibrary,defaults:Object.fromEntries(modules.map(item=>[item.key,defaultPageTemplate(item.key)]))});
         if(path==='/api/modules' && method==='GET') return respond(res,200,{modules,enabled:getSite(db).enabledModules});
         if(path==='/api/settings' && method==='GET') return respond(res,200,getSite(db));
         if(path==='/api/settings' && method==='PUT') {
@@ -248,8 +276,9 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(previewMatch && method==='GET') {
           const site=getSite(db),item=listContent(db).find(item=>item.id===previewMatch[1]);
           if(!item || !site.enabledModules.includes(item.kind))throw new HttpError(404,'صفحه پیش‌نمایش پیدا نشد.');
-          const items=publishedContent(db,site),options={baseURL,basePath:'',items,categories:publicCategories(db,items),menu:publicMenu(db,items),media:listMedia(db),preview:true};
+          const items=publishedContent(db,site),designs=releasedDesigns(db,[item]).map(source=>({...source,previewURL:issueDesignPreview(db,source.design_id,{revisionId:source.id},session,{releasedOnly:true}).url})),options={baseURL,basePath:'',items,categories:publicCategories(db,items),menu:publicMenu(db,items),media:listMedia(db),designs,preview:true};
           res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+          res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Content-Security-Policy',res.getHeader('Content-Security-Policy').replace("frame-ancestors 'none'",`frame-ancestors ${origin}`));
           return respond(res,200,item.kind==='pages' && item.slug==='home'?renderHome(site,[...items.filter(current=>current.id!==item.id),item],options):renderContent(site,item,options),'text/html; charset=utf-8');
         }
         const match=path.match(/^\/api\/content\/([a-f0-9-]{36})$/);
@@ -271,19 +300,19 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         throw new HttpError(404,'مسیر پیدا نشد.');
       }
       if(method!=='GET') throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
-      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/assets/templates.js':'templates.js','/assets/section-editor.js':'section-editor.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
+      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/assets/templates.js':'templates.js','/assets/section-editor.js':'section-editor.js','/assets/designer.js':'designer.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
       if(path==='/assets/theme.css')return respond(res,200,themeCSS(getSite(db).theme),'text/css; charset=utf-8');
       if(assets[path]) {
         if(path.startsWith('/admin/reset-password'))res.setHeader('Referrer-Policy','no-referrer');
         const file=assets[path];const types={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};
         return respond(res,200,await readFile(resolve(publicDir,file),'utf8'),types[file.split('.').pop()]);
       }
-      const site=getSite(db);const items=publishedContent(db,site);const categories=publicCategories(db,items);const options={baseURL,basePath:'',items,categories,menu:publicMenu(db,items),media:listMedia(db)};
+      const site=getSite(db);const items=publishedContent(db,site);const categories=publicCategories(db,items);const options={baseURL,basePath:'',items,categories,menu:publicMenu(db,items),media:listMedia(db),designs:releasedDesigns(db,items)};
       const imageMatch=path.match(/^\/media\/([a-f0-9-]{36})\.(png|jpg)$/);
       if(imageMatch) {
         const item=db.prepare('SELECT * FROM media WHERE id=?').get(imageMatch[1]);
         const session=getSession(db,req),authorized=session && !(requireAdminMfa && session.role==='admin' && !session.mfa_enabled);
-        if(!item || (item.mime==='image/png'?'png':'jpg')!==imageMatch[2] || (!referencedMedia(items).includes(item.id) && !authorized))throw new HttpError(404,'تصویر پیدا نشد.');
+        if(!item || (item.mime==='image/png'?'png':'jpg')!==imageMatch[2] || (!referencedMedia(items,releasedDesigns(db,items)).includes(item.id) && !authorized))throw new HttpError(404,'تصویر پیدا نشد.');
         return respond(res,200,await loadMedia(mediaDir,item),item.mime);
       }
       if(path==='/robots.txt') return respond(res,200,`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nSitemap: ${baseURL}/sitemap.xml\n`,'text/plain; charset=utf-8');
