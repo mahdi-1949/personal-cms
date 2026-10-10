@@ -36,7 +36,7 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
     if(designs.length){
       await mkdir(join(staging,'design-vendor'),{recursive:true});
       await writeFile(join(staging,'_headers'),`${basePath}/design-runtime/*\n  Access-Control-Allow-Origin: *\n  Content-Security-Policy: sandbox allow-scripts; frame-ancestors ${new URL(baseURL).origin}\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n${basePath}/design-vendor/*\n  Access-Control-Allow-Origin: *\n  X-Content-Type-Options: nosniff\n`);
-      for(const name of vendorFiles)await writeFile(join(staging,'design-vendor',name),await vendorSource(name));
+      for(const name of vendorFiles){const target=join(staging,'design-vendor',name);await mkdir(dirname(target),{recursive:true});await writeFile(target,await vendorSource(name));}
       for(const design of designs){
         const local=`design-runtime/${design.design_id}/${design.id}`,folder=join(staging,local),prefix=`${basePath}/${local}/`;
         await mkdir(join(folder,'assets'),{recursive:true});
@@ -55,7 +55,7 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
     await writeFile(join(staging,'sitemap.xml'),sitemap(items,baseURL,categories.map(categoryPath)));
     await writeFile(join(staging,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${baseURL}/sitemap.xml\n`);
     await writeFile(join(staging,'.nojekyll'),'');
-    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.6.0',exportedAt:new Date().toISOString()}));
+    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.7.0',exportedAt:new Date().toISOString()}));
     if(exists){const previous=`${output}.previous-${randomUUID()}`;await rename(output,previous);try{await rename(staging,output);}catch(error){await rename(previous,output);throw error;}await rm(previous,{recursive:true});}
     else await rename(staging,output);
     return {output,count:items.length,warnings:[...(site.contactEnabled?['Contact form is excluded from static export; it requires the Node.js backend.']:[]),...(designs.length?['Serve static code designs on a separate origin from any authenticated CMS. Configure CORS for design JavaScript/vendor files and CSP sandbox allow-scripts for runtime HTML; see docs/DESIGN-WORKSPACE.fa.md.']:[])]};

@@ -1,5 +1,14 @@
 # تغییرات
 
+## 0.7.0 — 2026-10-10
+
+- Designer asset library for embedded-resource GLB (20 MiB) and WOFF fonts (2 MiB), with opt-in design permissions, scoped previews/public releases and immutable-history deletion guards.
+- Bounded child-process validation using the official Khronos glTF validator, full embedded PNG/JPEG decoding, complexity limits and WOFF directory/checksum/decompression checks.
+- Pinned local GLTFLoader with its approved utility dependencies; product preset loads embedded textures/animations with fallback, reduced-motion, pause, sizing and cleanup.
+- Selected asset metadata and one-click font insertion; image block selectors and validation remain restricted to images.
+- Backups and static subpath exports include models/fonts and approved loader files; image normalization skips design assets. No schema change (6).
+- New API/file/backup/export tests and browser coverage for real GLB texture rendering and WOFF loading in private/public/static runtimes. WOFF2/global theme fonts, compressed models, React/TSX, content history/autosave and real hosting remain pending.
+
 ## 0.6.0 — 2026-10-10
 
 - Designer workspace for browser HTML/CSS/JavaScript with opt-in editor access, autosave, bounded immutable history, restore, responsive isolated preview and bounded text console.

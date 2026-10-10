@@ -29,4 +29,21 @@ if(renderer){
 }`},
 ];
 
+const hero=designPresets.find(p=>p.key==='three-hero');
+designPresets.push({key:'glb-hero',label:'نمایش مدل GLB',css:hero.css,
+  html:hero.html.replace('ایده شما در بُعدی تازه','مدل سه‌بعدی محصول شما').replace('حلقه سه‌بعدی آبی با نور و سایه','مدل سه‌بعدی محصول').replace('این نمونه با کد قابل تغییر است. توضیح، رنگ، هندسه و حرکت را مطابق برند مشتری طراحی کنید.','مدل GLB را بارگذاری و در دارایی‌های این طرح انتخاب کنید.').replace('نمای سه‌بعدی در این دستگاه در دسترس نیست؛ محتوای صفحه همچنان قابل خواندن است.','نمای مدل در دسترس نیست؛ فایل GLB انتخاب‌شده، کنسول و پشتیبانی WebGL را بررسی کنید.'),
+  js:hero.js.replace("import * as THREE from 'three';", "import * as THREE from 'three';\nimport { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';")
+    .replace(/  const geometry=new THREE\.TorusKnotGeometry[\s\S]*?scene\.add\(mesh\);/,`  const mesh=new THREE.Group();scene.add(mesh);let model=null,closed=false;const mixer=new THREE.AnimationMixer(mesh);
+  const modelId=Object.keys(cms.assetInfo).find(id=>cms.assetInfo[id].mime==='model/gltf-binary');
+  if(modelId)new GLTFLoader().loadAsync(cms.assets[modelId]).then(gltf=>{
+    model=gltf.scene;
+    if(closed){disposeModel();return;}
+    const bounds=new THREE.Box3().setFromObject(model),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
+    const scale=2.4/Math.max(size.x,size.y,size.z,0.001);model.position.sub(center);mesh.add(model);mesh.scale.setScalar(scale);
+    gltf.animations.forEach(clip=>mixer.clipAction(clip).play());renderer.domElement.dataset.modelLoaded='true';sync();console.log('مدل GLB آماده است.');
+  }).catch(error=>{document.querySelector('#fallback').hidden=false;console.error(error.message);});
+  else {document.querySelector('#fallback').hidden=false;button.hidden=true;}
+  function disposeModel(){if(!model)return;model.traverse(object=>{object.geometry?.dispose();for(const material of (Array.isArray(object.material)?object.material:[object.material]).filter(Boolean)){for(const value of Object.values(material)){if(value?.isTexture){value.source?.data?.close?.();value.dispose();}}material.dispose();}});mixer.stopAllAction();mixer.uncacheRoot(mesh);}`)
+    .replace('mesh.rotation.y+=delta*.3;mesh.rotation.x+=delta*.12;','mesh.rotation.y+=delta*.3;mixer.update(delta);')
+    .replace('geometry.dispose();material.dispose();renderer.dispose();','closed=true;disposeModel();renderer.dispose();')});
 for(const preset of designPresets){preset.html=preset.html.replace(/></g,'>\n<');preset.css=preset.css.replace(/}/g,'}\n');}

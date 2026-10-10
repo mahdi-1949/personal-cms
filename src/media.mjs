@@ -3,14 +3,16 @@ import { mkdir,writeFile,unlink,readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HttpError,listContent } from './content.mjs';
 import { processImage } from './image-processing.mjs';
+import { processDesignAsset } from './asset-processing.mjs';
+import { extension,isImage } from './asset-types.mjs';
 import { designAssets } from './designs.mjs';
 import { referencedMedia } from './blocks.mjs';
 
 export const MAX_IMAGE_BYTES=5*1024*1024;
-export const mediaPath=(dir,item)=>join(dir,`${item.id}.${item.mime==='image/png'?'png':'jpg'}`);
+export const mediaPath=(dir,item)=>join(dir,`${item.id}.${extension(item)}`);
 export const listMedia=db=>db.prepare('SELECT * FROM media ORDER BY created_at DESC').all();
 export async function uploadMedia(db,dir,buffer,{mime,filename,userId,authorize}) {
-  const dimensions=await processImage(buffer,mime);
+  const dimensions=await (isImage({mime})?processImage(buffer,mime):processDesignAsset(buffer,mime));
   buffer=dimensions.buffer;
   if(typeof filename!=='string' || !filename.trim() || filename.length>200 || /[\x00-\x1f]/.test(filename))throw new HttpError(422,'نام تصویر معتبر نیست.');
   const id=randomUUID(),now=new Date().toISOString();const item={id,mime};

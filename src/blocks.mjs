@@ -7,7 +7,7 @@ function text(value,max,required=false) {
 }
 function mediaRef(db,value) {
   if(value===undefined || value==='')return '';
-  if(typeof value!=='string' || !db.prepare('SELECT id FROM media WHERE id=?').get(value))throw new HttpError(422,'تصویر بخش پیدا نشد.');
+  if(typeof value!=='string' || !db.prepare("SELECT id FROM media WHERE id=? AND mime IN ('image/png','image/jpeg')").get(value))throw new HttpError(422,'تصویر بخش پیدا نشد.');
   return value;
 }
 function contentRef(db,value) {
@@ -30,7 +30,7 @@ export function validateBlocks(db,blocks) {
         return {type:'heading',text:text(block.text,200,true),level:block.level};
       case 'paragraph':return {type:'paragraph',text:text(block.text,10000,true)};
       case 'image':
-        if(typeof block.mediaId!=='string' || !db.prepare('SELECT id FROM media WHERE id=?').get(block.mediaId))throw new HttpError(422,'تصویر بلوک پیدا نشد.');
+        if(typeof block.mediaId!=='string' || !db.prepare("SELECT id FROM media WHERE id=? AND mime IN ('image/png','image/jpeg')").get(block.mediaId))throw new HttpError(422,'تصویر بلوک پیدا نشد.');
         return {type:'image',mediaId:block.mediaId,alt:text(block.alt,500),caption:text(block.caption,500)};
       case 'cta': {
         if(typeof block.contentId!=='string' || !db.prepare('SELECT id FROM content WHERE id=?').get(block.contentId))throw new HttpError(422,'صفحه مقصد پیدا نشد.');

@@ -4,13 +4,14 @@ import { acquireDataLock } from './data-lock.mjs';
 import { openDatabase } from './database.mjs';
 import { mediaPath,listMedia } from './media.mjs';
 import { processImage } from './image-processing.mjs';
+import { isImage } from './asset-types.mjs';
 
 // Offline upgrade of legacy files. Preflight all images; each replacement is atomic.
 export async function normalizeMedia({dbPath,mediaDir=resolve(dirname(dbPath),'media')}) {
   const release=acquireDataLock(dbPath);let db,stage,keepStage=false;
   try {
     if(!(await lstat(dbPath)).isFile())throw new Error('An existing database is required');
-    db=openDatabase(dbPath);const items=listMedia(db);
+    db=openDatabase(dbPath);const items=listMedia(db).filter(isImage);
     if(!items.length)return {normalized:0};
     const directory=await lstat(mediaDir);
     if(!directory.isDirectory() || directory.isSymbolicLink())throw new Error('Media directory must be a real directory');

@@ -8,7 +8,8 @@ import { getSession,createSession,verifyPassword,hashPassword,cookie,digest,rate
 import { HttpError,putContent,publishedContent,listContent } from './content.mjs';
 import { listUsers,addUser,updateUser,changePassword,listSessions } from './users.mjs';
 import { getMenu,putMenu,publicMenu,referencedMedia,publicBlocks } from './blocks.mjs';
-import { MAX_IMAGE_BYTES,listMedia,uploadMedia,updateMedia,deleteMedia,loadMedia } from './media.mjs';
+import { listMedia,uploadMedia,updateMedia,deleteMedia,loadMedia } from './media.mjs';
+import { assetLimit,extension,isImage } from './asset-types.mjs';
 import { modules,moduleByKey,contentPath } from './modules/registry.mjs';
 import { renderHome,renderContent,renderCategory,renderContact,renderNotFound,sitemap,siteURL } from './render.mjs';
 import { listCategories,putCategory,publicCategories,categoryPath } from './categories.mjs';
@@ -77,7 +78,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         const name=path.slice('/design-vendor/'.length);if(!vendorFiles.includes(name))throw new HttpError(404,'کتابخانه پیدا نشد.');
         return respond(res,200,await vendorSource(name),name==='LICENSE.txt'?'text/plain; charset=utf-8':'text/javascript; charset=utf-8',{'Access-Control-Allow-Origin':'*'});
       }
-      const runtime=path.match(/^\/(design-preview|design-runtime)\/([a-f0-9-]{36}|[a-f0-9]{64})(?:\/([a-f0-9-]{36}))?\/(index\.html|entry\.js|bridge\.js|style\.css|assets\/([a-f0-9-]{36})\.(png|jpg))$/);
+      const runtime=path.match(/^\/(design-preview|design-runtime)\/([a-f0-9-]{36}|[a-f0-9]{64})(?:\/([a-f0-9-]{36}))?\/(index\.html|entry\.js|bridge\.js|style\.css|assets\/([a-f0-9-]{36})\.(png|jpg|glb|woff))$/);
       if(runtime && method==='GET') {
         const [,kind,id,revisionId,file,assetId,ext]=runtime;
         if((kind==='design-preview' && revisionId) || (kind==='design-runtime' && !revisionId))throw new HttpError(404,'طرح پیدا نشد.');
@@ -92,10 +93,10 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(file==='bridge.js')return respond(res,200,runtimeBridge(source,prefix,listMedia(db)),'text/javascript; charset=utf-8',extra);
         if(file==='style.css')return respond(res,200,source.css,'text/css; charset=utf-8',extra);
         const image=db.prepare('SELECT * FROM media WHERE id=?').get(assetId);
-        if(!image || !source.assets.includes(assetId) || ext!==(image.mime==='image/png'?'png':'jpg'))throw new HttpError(404,'تصویر طرح پیدا نشد.');
+        if(!image || !source.assets.includes(assetId) || ext!==extension(image))throw new HttpError(404,'دارایی طرح پیدا نشد.');
         return respond(res,200,await loadMedia(mediaDir,image),image.mime,extra);
       }
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.6.0'});
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.7.0'});
       if(path==='/api/auth/options' && method==='GET')return respond(res,200,{passwordRecovery:Boolean(mailer&&key)});
       if(path==='/api/auth/forgot-password' && method==='POST') {
         if(!mailer || !key)throw new HttpError(503,'بازیابی رمز در حال حاضر در دسترس نیست.');
@@ -241,9 +242,11 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(path==='/api/media' && method==='POST') {
           const mime=req.headers['content-type'];let filename;
           try{filename=decodeURIComponent(req.headers['x-filename']||'');}catch{throw new HttpError(422,'نام تصویر معتبر نیست.');}
-          const buffer=await readBytes(req,MAX_IMAGE_BYTES);
+          if(!['image/png','image/jpeg','model/gltf-binary','font/woff'].includes(mime))throw new HttpError(422,'نوع فایل مجاز نیست.');
+          if(!isImage({mime}))requireDesignerForRequest(session);
+          const buffer=await readBytes(req,assetLimit(mime));
           requireSession(db,req);
-          return respond(res,201,await uploadMedia(db,mediaDir,buffer,{mime,filename,userId:session.user_id,authorize:()=>requireSession(db,req)}));
+          return respond(res,201,await uploadMedia(db,mediaDir,buffer,{mime,filename,userId:session.user_id,authorize:()=>{const current=requireSession(db,req);if(!isImage({mime}))requireDesignerForRequest(current);}}));
         }
         const mediaMatch=path.match(/^\/api\/media\/([a-f0-9-]{36})$/);
         if(mediaMatch && method==='PUT')return respond(res,200,updateMedia(db,mediaMatch[1],await readBody(req)));
@@ -308,11 +311,11 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         return respond(res,200,await readFile(resolve(publicDir,file),'utf8'),types[file.split('.').pop()]);
       }
       const site=getSite(db);const items=publishedContent(db,site);const categories=publicCategories(db,items);const options={baseURL,basePath:'',items,categories,menu:publicMenu(db,items),media:listMedia(db),designs:releasedDesigns(db,items)};
-      const imageMatch=path.match(/^\/media\/([a-f0-9-]{36})\.(png|jpg)$/);
+      const imageMatch=path.match(/^\/media\/([a-f0-9-]{36})\.(png|jpg|glb|woff)$/);
       if(imageMatch) {
         const item=db.prepare('SELECT * FROM media WHERE id=?').get(imageMatch[1]);
         const session=getSession(db,req),authorized=session && !(requireAdminMfa && session.role==='admin' && !session.mfa_enabled);
-        if(!item || (item.mime==='image/png'?'png':'jpg')!==imageMatch[2] || (!referencedMedia(items,releasedDesigns(db,items)).includes(item.id) && !authorized))throw new HttpError(404,'تصویر پیدا نشد.');
+        if(!item || extension(item)!==imageMatch[2] || (!referencedMedia(items,releasedDesigns(db,items)).includes(item.id) && !authorized))throw new HttpError(404,'دارایی پیدا نشد.');
         return respond(res,200,await loadMedia(mediaDir,item),item.mime);
       }
       if(path==='/robots.txt') return respond(res,200,`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nSitemap: ${baseURL}/sitemap.xml\n`,'text/plain; charset=utf-8');
