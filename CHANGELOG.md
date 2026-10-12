@@ -1,5 +1,14 @@
 # تغییرات
 
+## 0.8.0 — 2026-10-12
+
+- Separate content working drafts, 1.5-second validated autosave, immutable bounded history, visual revision previews, restore-to-draft and unique unpublished duplication.
+- Explicit apply/publish with canonical + draft conflict checks; live pages, slugs, media visibility, sitemap and exports remain tied to the saved/public content.
+- Admin retains all CMS capabilities; editor/author/designer/viewer access profiles are enforced at the API and reflected in the dashboard. Profile changes revoke sessions and preview capabilities.
+- Schema 7 migration backfills one baseline snapshot without changing legacy pages, users, settings or sessions. Backups preserve working drafts, snapshots, profiles and referenced media.
+- History protects images from deletion; page deletion checks concurrent working edits and cascades history. Legacy content PUT refuses to overwrite a working draft.
+- Twelve new API/security/migration/backup tests and browser coverage for autosave/reopen/history/restore/duplicate/conflicts and restricted account controls. React/TSX, global custom fonts and real hosting remain pending.
+
 ## 0.7.0 — 2026-10-10
 
 - Designer asset library for embedded-resource GLB (20 MiB) and WOFF fonts (2 MiB), with opt-in design permissions, scoped previews/public releases and immutable-history deletion guards.

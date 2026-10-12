@@ -26,6 +26,9 @@ import { designAPI } from './design-api.mjs';
 import { canDesign,releasedDesigns,previewRevision,publicRevision,issueDesignPreview } from './designs.mjs';
 import { runtimeDocument,runtimeBridge,runtimePolicy,vendorFiles,vendorSource } from './design-runtime.mjs';
 import { designPresets } from './design-presets.mjs';
+import { permissions } from './permissions.mjs';
+import { contentAPI } from './content-api.mjs';
+import { listAuthoringContent,getContentEditor } from './content-workspace.mjs';
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 
 function respond(res,status,body,type='application/json; charset=utf-8',extra={}) {
@@ -96,7 +99,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(!image || !source.assets.includes(assetId) || ext!==extension(image))throw new HttpError(404,'دارایی طرح پیدا نشد.');
         return respond(res,200,await loadMedia(mediaDir,image),image.mime,extra);
       }
-      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.7.0'});
+      if(path==='/api/health' && method==='GET') return respond(res,200,{ok:true,version:'0.8.0'});
       if(path==='/api/auth/options' && method==='GET')return respond(res,200,{passwordRecovery:Boolean(mailer&&key)});
       if(path==='/api/auth/forgot-password' && method==='POST') {
         if(!mailer || !key)throw new HttpError(503,'بازیابی رمز در حال حاضر در دسترس نیست.');
@@ -160,7 +163,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         if(mfaRequired && !['/api/auth/me','/api/auth/logout'].includes(path) && !path.startsWith('/api/auth/mfa'))throw new HttpError(403,'برای مدیریت سایت ابتدا ورود دومرحله‌ای را فعال کنید.');
         const event=mutationEvent(method,path);if(event)res.cmsAudit=body=>recordAudit(db,{event,actorId:session.user_id,targetId:typeof body?.id==='string'?body.id:path.match(/[a-f0-9-]{36}$/)?.[0]||null,ip});
         if(['POST','PUT','DELETE'].includes(method) && req.headers['x-csrf-token']!==session.csrf) throw new HttpError(403,'توکن درخواست معتبر نیست؛ صفحه را تازه کنید.');
-        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role,mfaEnabled:Boolean(session.mfa_enabled),mfaRequired,canDesign:canDesign(session)},csrf:session.csrf});
+        if(path==='/api/auth/me' && method==='GET') return respond(res,200,{user:{id:session.user_id,email:session.email,role:session.role,accessProfile:session.access_profile,permissions:permissions(session),mfaEnabled:Boolean(session.mfa_enabled),mfaRequired,canDesign:canDesign(session)},csrf:session.csrf});
         if(path==='/api/auth/logout' && method==='POST') { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.token_hash);return respond(res,200,{ok:true},undefined,{'Set-Cookie':cookie('',secureCookies,true)}); }
         if(path==='/api/auth/password' && method==='PUT') {
           const attemptKey=digest(`password:${session.user_id}`);if(rateLimited(db,attemptKey))throw new HttpError(429,'تلاش‌های تغییر رمز زیاد است؛ بعداً امتحان کنید.');
@@ -188,6 +191,7 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           return respond(res,200,{ok:true},undefined,sessionMatch[1]===session.session_id?{'Set-Cookie':cookie('',secureCookies,true)}:{});
         }
         if(await designAPI({db,req,res,path,method,session,key,ip,readBody,respond,authorize:()=>{const current=requireSession(db,req);requireDesignerForRequest(current);return current;}}))return;
+        if(await contentAPI({db,req,res,path,method,session,readBody,respond,ip}))return;
         if(path==='/api/users' || path.startsWith('/api/users/')) {
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند کاربران را مدیریت کند.');
           if(path==='/api/users' && method==='GET')return respond(res,200,{users:listUsers(db)});
@@ -240,16 +244,17 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         }
         if(path==='/api/media' && method==='GET')return respond(res,200,{media:listMedia(db)});
         if(path==='/api/media' && method==='POST') {
+          if(!permissions(session).mediaManage)throw new HttpError(403,'دسترسی مدیریت رسانه لازم است.');
           const mime=req.headers['content-type'];let filename;
           try{filename=decodeURIComponent(req.headers['x-filename']||'');}catch{throw new HttpError(422,'نام تصویر معتبر نیست.');}
           if(!['image/png','image/jpeg','model/gltf-binary','font/woff'].includes(mime))throw new HttpError(422,'نوع فایل مجاز نیست.');
           if(!isImage({mime}))requireDesignerForRequest(session);
           const buffer=await readBytes(req,assetLimit(mime));
           requireSession(db,req);
-          return respond(res,201,await uploadMedia(db,mediaDir,buffer,{mime,filename,userId:session.user_id,authorize:()=>{const current=requireSession(db,req);if(!isImage({mime}))requireDesignerForRequest(current);}}));
+          return respond(res,201,await uploadMedia(db,mediaDir,buffer,{mime,filename,userId:session.user_id,authorize:()=>{const current=requireSession(db,req);if(!permissions(current).mediaManage)throw new HttpError(403,'دسترسی مدیریت رسانه لازم است.');if(!isImage({mime}))requireDesignerForRequest(current);}}));
         }
         const mediaMatch=path.match(/^\/api\/media\/([a-f0-9-]{36})$/);
-        if(mediaMatch && method==='PUT')return respond(res,200,updateMedia(db,mediaMatch[1],await readBody(req)));
+        if(mediaMatch && method==='PUT'){if(!permissions(session).mediaManage)throw new HttpError(403,'دسترسی مدیریت رسانه لازم است.');return respond(res,200,updateMedia(db,mediaMatch[1],await readBody(req)));}
         if(mediaMatch && method==='DELETE') {
           if(session.role!=='admin')throw new HttpError(403,'فقط مدیر می‌تواند تصویر را حذف کند.');
           await deleteMedia(db,mediaDir,mediaMatch[1],await readBody(req));return respond(res,200,{ok:true});
@@ -270,14 +275,17 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
           const theme_updated_at=changed?new Date(Math.max(Date.now(),Date.parse(previous.theme_updated_at||0)+1)).toISOString():previous.theme_updated_at;
           const site={theme,theme_updated_at,name:data.name.trim(),description:data.description.trim(),contactEnabled,enabledModules:[...new Set(['pages',...data.enabledModules])]};saveSite(db,site);return respond(res,200,site);
         }
-        if(path==='/api/content' && method==='GET') return respond(res,200,{content:listContent(db)});
+        if(path==='/api/content' && method==='GET') return respond(res,200,{content:listAuthoringContent(db)});
         if(path==='/api/content' && method==='POST') {
+          if(!permissions(session).contentEdit)throw new HttpError(403,'دسترسی ویرایش محتوا لازم است.');
           const data=await readBody(req);if(!getSite(db).enabledModules.includes(data.kind)) throw new HttpError(422,'این ماژول غیرفعال است.');
-          return respond(res,201,putContent(db,data));
+          if(data.status==='published' && !permissions(session).contentPublish)throw new HttpError(403,'دسترسی انتشار لازم است.');
+          return respond(res,201,putContent(db,data,undefined,{actorId:session.user_id}));
         }
         const previewMatch=path.match(/^\/api\/content\/([a-f0-9-]{36})\/preview$/);
         if(previewMatch && method==='GET') {
-          const site=getSite(db),item=listContent(db).find(item=>item.id===previewMatch[1]);
+          const site=getSite(db),editor=getContentEditor(db,previewMatch[1]);let item=editor.draft?{...editor.content,...editor.draft}:editor.content;
+          if(url.searchParams.has('revision')){const revision=db.prepare('SELECT payload FROM content_revisions WHERE id=? AND content_id=?').get(url.searchParams.get('revision'),previewMatch[1]);if(!revision)throw new HttpError(404,'نسخه پیدا نشد.');item={...editor.content,...JSON.parse(revision.payload)};}
           if(!item || !site.enabledModules.includes(item.kind))throw new HttpError(404,'صفحه پیش‌نمایش پیدا نشد.');
           const items=publishedContent(db,site),designs=releasedDesigns(db,[item]).map(source=>({...source,previewURL:issueDesignPreview(db,source.design_id,{revisionId:source.id},session,{releasedOnly:true}).url})),options={baseURL,basePath:'',items,categories:publicCategories(db,items),menu:publicMenu(db,items),media:listMedia(db),designs,preview:true};
           res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
@@ -286,24 +294,28 @@ export async function createApp({dbPath=':memory:',origin='http://localhost:3000
         }
         const match=path.match(/^\/api\/content\/([a-f0-9-]{36})$/);
         if(match && method==='PUT') {
+          if(!permissions(session).contentEdit)throw new HttpError(403,'دسترسی ویرایش محتوا لازم است.');
           const data=await readBody(req);const previous=db.prepare('SELECT * FROM content WHERE id=?').get(match[1]);
           if(!previous) throw new HttpError(404,'محتوا پیدا نشد.');
+          if((data.status==='published' || previous.status==='published') && !permissions(session).contentPublish)throw new HttpError(403,'دسترسی انتشار لازم است.');
+          if(db.prepare('SELECT content_id FROM content_working WHERE content_id=?').get(match[1]))throw new HttpError(409,'پیش‌نویس مستقل وجود دارد؛ نسخه تازه را در ویرایشگر باز کنید.');
           if(data.expected_updated_at!==previous.updated_at) throw new HttpError(409,'این محتوا در جلسه دیگری تغییر کرده؛ فهرست را تازه کنید.');
           if(data.kind!==previous.kind) throw new HttpError(422,'نوع محتوا قابل تغییر نیست.');
           if(!getSite(db).enabledModules.includes(data.kind)) throw new HttpError(422,'این ماژول غیرفعال است.');
-          return respond(res,200,putContent(db,data,match[1]));
+          return respond(res,200,putContent(db,data,match[1],{actorId:session.user_id}));
         }
         if(match && method==='DELETE') {
           if(session.role!=='admin') throw new HttpError(403,'فقط مدیر می‌تواند محتوا را حذف کند.');
           const data=await readBody(req);const previous=db.prepare('SELECT updated_at FROM content WHERE id=?').get(match[1]);
           if(!previous) throw new HttpError(404,'محتوا پیدا نشد.');
           if(data.expected_updated_at!==previous.updated_at) throw new HttpError(409,'محتوا تغییر کرده؛ فهرست را تازه کنید.');
+          const working=db.prepare('SELECT updated_at FROM content_working WHERE content_id=?').get(match[1]);if(working && data.expected_draft_updated_at!==working.updated_at)throw new HttpError(409,'پیش‌نویس تغییر کرده؛ نسخه تازه را باز کنید.');
           db.prepare('DELETE FROM content WHERE id=?').run(match[1]);return respond(res,200,{ok:true});
         }
         throw new HttpError(404,'مسیر پیدا نشد.');
       }
       if(method!=='GET') throw new HttpError(405,'این روش پشتیبانی نمی‌شود.');
-      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/assets/templates.js':'templates.js','/assets/section-editor.js':'section-editor.js','/assets/designer.js':'designer.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
+      const assets={'/admin':'admin.html','/admin/':'admin.html','/assets/admin.css':'admin.css','/assets/admin.js':'admin.js','/assets/authoring.js':'authoring.js','/assets/site.css':'site.css','/assets/contact.js':'contact.js','/assets/operations.js':'operations.js','/assets/security.js':'security.js','/assets/templates.js':'templates.js','/assets/section-editor.js':'section-editor.js','/assets/designer.js':'designer.js','/assets/content-workspace.js':'content-workspace.js','/admin/reset-password/':'admin.html','/admin/reset-password':'admin.html'};
       if(path==='/assets/theme.css')return respond(res,200,themeCSS(getSite(db).theme),'text/css; charset=utf-8');
       if(assets[path]) {
         if(path.startsWith('/admin/reset-password'))res.setHeader('Referrer-Policy','no-referrer');

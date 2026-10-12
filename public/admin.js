@@ -1,3 +1,4 @@
+import { createContentWorkspace } from './content-workspace.js';
 import { createDesigner } from './designer.js';
 import { createTemplates } from './templates.js';
 import { createAuthoring } from './authoring.js';
@@ -14,7 +15,7 @@ async function api(path,method='GET',body){
   const data=await response.json();
   if(!response.ok){if(response.status===401 && path!=='/auth/login')showLogin();const error=new Error(data.error||'خطای ارتباط با سرور');error.status=response.status;throw error;}return data;
 }
-function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();authoring.reset();operations.reset();security.reset();designer.reset();}
+function showLogin(){state.csrf='';state.user=null;state.view='dashboard';$('#workspace').hidden=true;$('#login-screen').hidden=false;$('#editor-dialog').close();contentWorkspace.reset();authoring.reset();operations.reset();security.reset();designer.reset();}
 async function load(){
   const me=await api('/auth/me');state.user=me.user;state.csrf=me.csrf;
   if(me.user.mfaRequired){state.view='security';state.site=null;state.content=[];state.modules=[];state.media=[];$('#login-screen').hidden=true;$('#workspace').hidden=false;$('#account').textContent=state.user.email;$('#site-name').textContent='Core CMS';renderNavigation();render();return;}
@@ -29,14 +30,13 @@ function renderNavigation(){
   $('#navigation').querySelectorAll('button').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;renderNavigation();render();});
 }
 function heading(title,subtitle,action=''){return `<div class="page-heading"><div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div>${action}</div>`;}
-function rows(items){return items.map(item=>`<tr><td><strong>${esc(item.title)}</strong><span class="slug">${esc(item.slug)}</span></td><td>${esc(state.modules.find(m=>m.key===item.kind)?.singular)}</td><td><span class="badge ${item.status==='draft'?'draft':''}">${item.status==='draft'?'پیش‌نویس':'منتشرشده'}</span></td><td>${new Date(item.updated_at).toLocaleDateString('fa-IR')}</td><td><div class="row-actions"><a class="ghost" href="/api/content/${esc(item.id)}/preview" target="_blank" rel="noopener">پیش‌نمایش</a><button class="ghost" data-edit="${esc(item.id)}">ویرایش</button>${state.user.role==='admin'?`<button class="ghost danger" data-delete="${esc(item.id)}">حذف</button>`:''}</div></td></tr>`).join('');}
+function rows(items){return items.map(item=>`<tr><td><strong>${esc(item.title)}</strong><span class="slug">${esc(item.slug)}</span></td><td>${esc(state.modules.find(m=>m.key===item.kind)?.singular)}</td><td><span class="badge ${item.status==='draft'?'draft':''}">${item.status==='draft'?'پیش‌نویس':'منتشرشده'}</span></td><td>${new Date(item.updated_at).toLocaleDateString('fa-IR')}</td><td><div class="row-actions"><a class="ghost" href="/api/content/${esc(item.id)}/preview" target="_blank" rel="noopener">پیش‌نمایش</a><button class="ghost" data-edit="${esc(item.id)}">${state.user.permissions.contentEdit?'ویرایش':'مشاهده'}</button>${state.user.permissions.contentEdit?`<button class="ghost" data-copy="${esc(item.id)}">کپی</button>`:''}${item.hasWorkingDraft?'<span class="badge draft">پیش‌نویس تازه</span>':''}${state.user.role==='admin'?`<button class="ghost danger" data-delete="${esc(item.id)}">حذف</button>`:''}</div></td></tr>`).join('');}
 function table(items){return items.length?`<div class="table-wrap"><table><thead><tr><th>عنوان / آدرس</th><th>نوع</th><th>وضعیت</th><th>آخرین تغییر</th><th>عملیات</th></tr></thead><tbody>${rows(items)}</tbody></table></div>`:'<div class="box empty"><h2>از اولین محتوا شروع کنید</h2><p>محتوا پس از انتشار در سایت نمایش داده می‌شود.</p></div>';}
 function bindRows(){
   $('#view').querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>openEditor(state.content.find(item=>item.id===button.dataset.edit)));
+  $('#view').querySelectorAll('[data-copy]').forEach(button=>button.onclick=async()=>{try{const editor=await api(`/content/${button.dataset.copy}/editor`),copy=await api(`/content/${button.dataset.copy}/duplicate`,'POST',{expected_updated_at:editor.content.updated_at,expected_draft_updated_at:editor.draft_updated_at});await load();await openEditor(copy);toast('کپی پیش‌نویس ساخته شد.');}catch(error){toast(error.message);}});
   $('#view').querySelectorAll('[data-delete]').forEach(button=>button.onclick=async()=>{
-    const item=state.content.find(item=>item.id===button.dataset.delete);
-    if(!window.confirm(`«${item.title}» حذف شود؟`))return;
-    try{await api(`/content/${item.id}`,'DELETE',{expected_updated_at:item.updated_at});await load();toast('محتوا حذف شد.');}catch(error){toast(error.message);}
+    try{const editor=await api(`/content/${button.dataset.delete}/editor`);if(!confirm(`«${editor.content.title}» همراه پیش‌نویس و تاریخچه حذف شود؟`))return;await api(`/content/${editor.content.id}`,'DELETE',{expected_updated_at:editor.content.updated_at,expected_draft_updated_at:editor.draft_updated_at});await load();toast('محتوا حذف شد.');}catch(error){toast(error.message);}
   });
 }
 function render(){
@@ -58,33 +58,20 @@ function render(){
   if(!module || !state.site.enabledModules.includes(module.key)){state.view='dashboard';renderNavigation();return render();}
   const items=state.content.filter(item=>item.kind===state.view);
   view.innerHTML=heading(module.label,`${number(items.length)} محتوا در این بخش`,`<button class="primary" id="new-content">+ ${esc(module.singular)} جدید</button>`)+`<input class="search" id="search" placeholder="جست‌وجو در عنوان…" aria-label="جست‌وجو در عنوان"><div id="content-list">${table(items)}</div>`;
-  $('#new-content').onclick=()=>openEditor(null);bindRows();
+  $('#new-content').hidden=!state.user.permissions.contentEdit;$('#new-content').onclick=()=>openEditor(null);bindRows();
   $('#search').oninput=event=>{$('#content-list').innerHTML=table(items.filter(item=>item.title.toLocaleLowerCase().includes(event.target.value.toLocaleLowerCase())));bindRows();};
 }
-function openEditor(item){
-  state.editing=item;const kind=item?.kind||state.view;state.editorKind=kind;
-  if(!state.site.enabledModules.includes(kind)){toast('این ماژول غیرفعال است.');return;}
-  const form=$('#editor-form');form.reset();$('#editor-error').textContent='';
-  $('#editor-heading').textContent=item?'ویرایش محتوا':`${state.modules.find(m=>m.key===kind).singular} جدید`;
-  if(item)for(const key of ['title','slug','status','excerpt','body','seo_title','seo_description'])form.elements[key].value=item[key];
-  templates.openPage(item,kind);authoring.openBlocks(item);operations.openCategories(item,kind);
-  $('#editor-dialog').showModal();form.elements.title.focus();
-}
+const openEditor=item=>contentWorkspace.open(item);
 $('#login-form').onsubmit=async event=>{
   event.preventDefault();const button=event.target.querySelector('button');button.disabled=true;$('#login-error').textContent='';
   try{const result=await api('/auth/login','POST',Object.fromEntries(new FormData(event.target)));state.csrf=result.csrf;event.target.reset();await load();}catch(error){$('#login-error').textContent=error.message;}finally{button.disabled=false;}
 };
-$('#editor-form').onsubmit=async event=>{
-  event.preventDefault();const button=event.target.querySelector('button[type=submit]');button.disabled=true;$('#editor-error').textContent='';
-  const item={...Object.fromEntries(new FormData(event.target)),kind:state.editorKind,blocks:authoring.collectBlocks(),categoryIds:operations.collectCategories(),...(state.editing?{expected_updated_at:state.editing.updated_at}:{})};
-  try{await api(state.editing?`/content/${state.editing.id}`:'/content',state.editing?'PUT':'POST',item);$('#editor-dialog').close();await load();toast('محتوا ذخیره شد.');}catch(error){$('#editor-error').textContent=error.message;}finally{button.disabled=false;}
-};
-for(const id of ['#close-editor','#cancel-editor'])$(id).onclick=()=>$('#editor-dialog').close();
 $('#logout').onclick=async()=>{try{await api('/auth/logout','POST',{});showLogin();}catch(error){toast(error.message);}};
 const designer=createDesigner({state,api,esc,toast,load,heading});
 const authoring=createAuthoring({state,api,esc,toast,load,showLogin,heading,number});
 const operations=createOperations({state,api,esc,toast,load,heading,number});
 const templates=createTemplates({state,api,esc,toast,load,heading});
+const contentWorkspace=createContentWorkspace({state,api,esc,toast,load,authoring,templates,operations});
 const security=createSecurity({state,api,esc,toast,showLogin,heading,number});
 security.init();
 if(!location.pathname.startsWith('/admin/reset-password'))load().catch(error=>{showLogin();if(!error.message.includes('وارد شوید'))toast(error.message);});

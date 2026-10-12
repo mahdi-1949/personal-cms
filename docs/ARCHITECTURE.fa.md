@@ -60,3 +60,7 @@
 `designs.mjs` داده/مجوز/انتشار، `design-api.mjs` API و `design-runtime.mjs` سند و CSP runtime را می‌سازند. `design-presets.mjs` نمونه سه‌بعدی و `public/designer.js` ویرایشگر/پیش‌نمایش/تاریخچه را فراهم می‌کنند. بلوک code-design شناسه طرح را نگه می‌دارد و نسخه منتشرشده همان طرح را حل می‌کند. عنوان/متن جایگزین در HTML اصلی است. تصویر طرح در قواعد visibility، حذف و export شرکت می‌کند.
 
 runtime با iframe و CSP sandbox بدون allow-same-origin اجرا می‌شود. CORS فقط فایل‌های runtime/vendor را برای origin جداشده مجاز می‌کند؛ API همچنان بسته است. Three از دو فایل build محلیِ allowlist‌شده سرو می‌شود. Node برای کد کاربر فقط subprocess نحوی محدود اجرا می‌کند و آن را eval نمی‌کند. خروجی ثابت نسخه‌های عمومی را همراه LICENSE و تنظیمات میزبان قابل اعمال کپی می‌کند؛ origin جدا از سرویس احراز هویت لازم است. شرح مرزها و میزبانی در DESIGN-WORKSPACE.fa.md است.
+
+## نسخه 0.8 — نویسندگی و مجوزها
+
+جدول content مرجع نسخه ذخیره‌شده/منتشرشده است؛ content_working به snapshot خصوصی در content_revisions اشاره می‌کند. autosave فقط working را جابه‌جا می‌کند؛ apply با دو قفل خوش‌بینانه، snapshot معتبر را به content منتقل و working را حذف می‌کند. saved_revision_id نسخه ذخیره‌شده را از pruning حفظ می‌کند و در API عمومی serialize نمی‌شود. تاریخچه همراه صفحه cascade و همراه بکاپ حفظ می‌شود. کاربران همچنان نقش پایه admin/editor دارند؛ access_profile و مجوز طراحی، پروفایل‌های کاری محدود را تعیین می‌کنند. permissions در هر نشست از کاربر زنده خوانده می‌شود.

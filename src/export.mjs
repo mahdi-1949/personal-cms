@@ -55,7 +55,7 @@ export async function exportSite({dbPath,outputDir,publicURL,mediaDir=join(dirna
     await writeFile(join(staging,'sitemap.xml'),sitemap(items,baseURL,categories.map(categoryPath)));
     await writeFile(join(staging,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${baseURL}/sitemap.xml\n`);
     await writeFile(join(staging,'.nojekyll'),'');
-    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.7.0',exportedAt:new Date().toISOString()}));
+    await writeFile(join(staging,'.core-cms-export'),JSON.stringify({version:'0.8.0',exportedAt:new Date().toISOString()}));
     if(exists){const previous=`${output}.previous-${randomUUID()}`;await rename(output,previous);try{await rename(staging,output);}catch(error){await rename(previous,output);throw error;}await rm(previous,{recursive:true});}
     else await rename(staging,output);
     return {output,count:items.length,warnings:[...(site.contactEnabled?['Contact form is excluded from static export; it requires the Node.js backend.']:[]),...(designs.length?['Serve static code designs on a separate origin from any authenticated CMS. Configure CORS for design JavaScript/vendor files and CSP sandbox allow-scripts for runtime HTML; see docs/DESIGN-WORKSPACE.fa.md.']:[])]};
