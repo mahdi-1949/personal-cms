@@ -27,7 +27,15 @@ export function validateContent(data) {
   if (!['draft','published'].includes(data.status)) throw new HttpError(422,'وضعیت نامعتبر است.');
   return {kind,title,slug,status:data.status,excerpt:field(data,'excerpt',500),body:field(data,'body',100000),seo_title:field(data,'seo_title',200),seo_description:field(data,'seo_description',500)};
 }
-export function putContent(db,data,id) {
+export const contentSnapshot=item=>Object.fromEntries(['kind','title','slug','status','excerpt','body','seo_title','seo_description','blocks','template','categoryIds'].map(key=>[key,item[key]]));
+export function recordContentRevision(db,item,actorId=null,source='save') {
+  const payload=JSON.stringify(contentSnapshot(item)),last=db.prepare('SELECT * FROM content_revisions WHERE content_id=? ORDER BY number DESC LIMIT 1').get(item.id);
+  if(last?.payload===payload)return last.id;
+  if(db.prepare('SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) AS n FROM content_revisions').get().n+Buffer.byteLength(payload)>64*1024*1024)throw new HttpError(422,'فضای تاریخچه محتوا پر شده است.');
+  const id=randomUUID();db.prepare('INSERT INTO content_revisions VALUES(?,?,?,?,?,?,?)').run(id,item.id,(last?.number||0)+1,payload,source,actorId,new Date().toISOString());return id;
+}
+export function pruneContentHistory(db,id){db.prepare("DELETE FROM content_revisions WHERE content_id=? AND id NOT IN (SELECT id FROM content_revisions WHERE content_id=? ORDER BY number DESC LIMIT 40) AND id<>COALESCE((SELECT saved_revision_id FROM content WHERE id=?),'') AND id<>COALESCE((SELECT revision_id FROM content_working WHERE content_id=?),'')").run(id,id,id,id);}
+export function putContent(db,data,id,{actorId=null,source='save',transaction=true}={}) {
   const item=validateContent(data);
   const blocks=validateBlocks(db,data.blocks??[]);
   const old=id?db.prepare('SELECT * FROM content WHERE id=?').get(id):null;
@@ -39,7 +47,7 @@ export function putContent(db,data,id) {
   const alias=db.prepare('SELECT * FROM redirects WHERE path=?').get(contentPath(item));
   if(alias && alias.content_id!==id)throw new HttpError(409,'این آدرس برای ریدایرکت رزرو است؛ ابتدا ریدایرکت را حذف کنید.');
   const now=new Date(Math.max(Date.now(),old?Date.parse(old.updated_at)+1:0)).toISOString();
-  db.exec('BEGIN IMMEDIATE');
+  if(transaction)db.exec('BEGIN IMMEDIATE');
   try {
     if(alias)db.prepare('DELETE FROM redirects WHERE id=?').run(alias.id);
     if(id)db.prepare('UPDATE content SET kind=?,title=?,slug=?,excerpt=?,body=?,status=?,seo_title=?,seo_description=?,updated_at=?,blocks=?,template=? WHERE id=?').run(item.kind,item.title,item.slug,item.excerpt,item.body,item.status,item.seo_title,item.seo_description,now,JSON.stringify(blocks),template,id);
@@ -47,11 +55,13 @@ export function putContent(db,data,id) {
     db.prepare('DELETE FROM content_categories WHERE content_id=?').run(id);
     for(const categoryId of ids)db.prepare('INSERT INTO content_categories VALUES(?,?)').run(id,categoryId);
     if(old && old.status==='published' && contentPath(old)!==contentPath(item))rememberRedirect(db,contentPath(old),{contentId:id});
-    db.exec('COMMIT');
-  }catch(error){db.exec('ROLLBACK');throw error;}
+    const saved=serializeContent(db,db.prepare('SELECT * FROM content WHERE id=?').get(id)),revisionId=recordContentRevision(db,saved,actorId,source);
+    db.prepare('UPDATE content SET saved_revision_id=? WHERE id=?').run(revisionId,id);pruneContentHistory(db,id);
+    if(transaction)db.exec('COMMIT');
+  }catch(error){if(transaction)db.exec('ROLLBACK');throw error;}
   return serializeContent(db,db.prepare('SELECT * FROM content WHERE id=?').get(id));
 }
-export const serializeContent=(db,item)=>({...item,blocks:JSON.parse(item.blocks),categoryIds:categoryIds(db,item.id)});
+export const serializeContent=(db,row)=>{const {saved_revision_id,...item}=row;return {...item,blocks:JSON.parse(item.blocks),categoryIds:categoryIds(db,item.id)};};
 export const listContent=db=>db.prepare('SELECT * FROM content ORDER BY updated_at DESC').all().map(item=>serializeContent(db,item));
 export function publishedContent(db,site) {
   return db.prepare("SELECT * FROM content WHERE status='published' ORDER BY updated_at DESC").all().filter(item=>site.enabledModules.includes(item.kind)).map(item=>serializeContent(db,item));

@@ -5,8 +5,9 @@ import { getSite } from './database.mjs';
 import { digest,verifyPassword } from './auth.mjs';
 import { consumeFactor } from './account-security.mjs';
 import { recordAudit } from './audit.mjs';
+import { permissions } from './permissions.mjs';
 
-export const canDesign=session=>session?.role==='admin' || Boolean(session?.design_access);
+export const canDesign=session=>permissions(session).designEdit;
 export function requireDesigner(session){if(!canDesign(session))throw new HttpError(403,'دسترسی فضای طراحی لازم است.');}
 const revision=row=>row?{...row,assets:JSON.parse(row.assets)}:null;
 export const designAssets=db=>db.prepare('SELECT assets FROM design_revisions').all().flatMap(row=>JSON.parse(row.assets));
@@ -92,10 +93,10 @@ export function issueDesignPreview(db,id,data,session,{releasedOnly=false}={}) {
 }
 export function previewRevision(db,token,requireAdminMfa=false) {
   if(!/^[a-f0-9]{64}$/.test(token))throw new HttpError(404,'پیش‌نمایش منقضی شده است.');
-  const row=db.prepare('SELECT r.*,d.name,d.published_id,p.released_only,u.role,u.design_access,u.mfa_secret FROM design_previews p JOIN design_revisions r ON r.id=p.revision_id JOIN designs d ON d.id=r.design_id JOIN sessions s ON s.token_hash=p.session_hash JOIN users u ON u.id=s.user_id WHERE p.token_hash=? AND p.expires_at>? AND s.expires_at>? AND u.active=1').get(digest(token),Date.now(),Date.now());
+  const row=db.prepare('SELECT r.*,d.name,d.published_id,p.released_only,u.role,u.design_access,u.access_profile,u.mfa_secret FROM design_previews p JOIN design_revisions r ON r.id=p.revision_id JOIN designs d ON d.id=r.design_id JOIN sessions s ON s.token_hash=p.session_hash JOIN users u ON u.id=s.user_id WHERE p.token_hash=? AND p.expires_at>? AND s.expires_at>? AND u.active=1').get(digest(token),Date.now(),Date.now());
   if(!row || (!row.released_only && !canDesign(row)) || (row.released_only && row.published_id!==row.id) || (requireAdminMfa && row.role==='admin' && !row.mfa_secret))throw new HttpError(404,'پیش‌نمایش منقضی شده است.');
   // Do not expose identity or authentication data to the runtime renderer.
-  const {role,design_access,mfa_secret,published_id,released_only,...source}=row;return revision(source);
+  const {role,design_access,access_profile,mfa_secret,published_id,released_only,...source}=row;return revision(source);
 }
 export function publicRevision(db,designId,revisionId) {
   const source=releasedDesigns(db,publishedContent(db,getSite(db))).find(r=>r.design_id===designId && r.id===revisionId);

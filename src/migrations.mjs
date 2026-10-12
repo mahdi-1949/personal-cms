@@ -74,6 +74,21 @@ const migrations = [
     site.theme={font:'system',density:'normal',typeScale:'normal',header:'inline',...site.theme};
     db.prepare("UPDATE settings SET value=? WHERE key='site'").run(JSON.stringify(site));
   }},
+  { version:7, apply(db) {
+    db.exec(`
+      ALTER TABLE users ADD COLUMN access_profile TEXT NOT NULL DEFAULT 'editor' CHECK(access_profile IN ('editor','author','designer','viewer'));
+      CREATE TABLE content_revisions (id TEXT PRIMARY KEY, content_id TEXT NOT NULL REFERENCES content(id) ON DELETE CASCADE, number INTEGER NOT NULL, payload TEXT NOT NULL, source TEXT NOT NULL, created_by TEXT REFERENCES users(id), created_at TEXT NOT NULL, UNIQUE(content_id,number));
+      CREATE INDEX content_history ON content_revisions(content_id,number DESC);
+      ALTER TABLE content ADD COLUMN saved_revision_id TEXT REFERENCES content_revisions(id);
+      CREATE TABLE content_working (content_id TEXT PRIMARY KEY REFERENCES content(id) ON DELETE CASCADE, revision_id TEXT NOT NULL REFERENCES content_revisions(id), base_updated_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT REFERENCES users(id));
+    `);
+    for(const row of db.prepare('SELECT * FROM content').all()){
+      const {saved_revision_id,...item}=row,revisionId=randomUUID();item.blocks=JSON.parse(item.blocks);item.categoryIds=db.prepare('SELECT category_id FROM content_categories WHERE content_id=? ORDER BY category_id').all(item.id).map(r=>r.category_id);
+      const payload=Object.fromEntries(['kind','title','slug','status','excerpt','body','seo_title','seo_description','blocks','template','categoryIds'].map(key=>[key,item[key]]));
+      db.prepare('INSERT INTO content_revisions VALUES(?,?,?,?,?,?,?)').run(revisionId,item.id,1,JSON.stringify(payload),'baseline',null,item.updated_at);
+      db.prepare('UPDATE content SET saved_revision_id=? WHERE id=?').run(revisionId,item.id);
+    }
+  }},
 ];
 
 export const SCHEMA_VERSION=migrations.at(-1).version;

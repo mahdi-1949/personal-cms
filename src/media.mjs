@@ -7,6 +7,7 @@ import { processDesignAsset } from './asset-processing.mjs';
 import { extension,isImage } from './asset-types.mjs';
 import { designAssets } from './designs.mjs';
 import { referencedMedia } from './blocks.mjs';
+import { historicalContent } from './content-workspace.mjs';
 
 export const MAX_IMAGE_BYTES=5*1024*1024;
 export const mediaPath=(dir,item)=>join(dir,`${item.id}.${extension(item)}`);
@@ -38,7 +39,7 @@ export async function deleteMedia(db,dir,id,data) {
   const item=db.prepare('SELECT * FROM media WHERE id=?').get(id);
   if(!item)throw new HttpError(404,'تصویر پیدا نشد.');
   if(data.expected_updated_at!==item.updated_at)throw new HttpError(409,'تصویر تغییر کرده؛ فهرست را تازه کنید.');
-  if(referencedMedia(listContent(db)).includes(id) || designAssets(db).includes(id))throw new HttpError(409,'تصویر در محتوا یا تاریخچه طراحی استفاده شده و قابل حذف نیست.');
+  if(referencedMedia([...listContent(db),...historicalContent(db)]).includes(id) || designAssets(db).includes(id))throw new HttpError(409,'دارایی در محتوا یا تاریخچه استفاده شده و قابل حذف نیست.');
   // Remove the DB record synchronously so no concurrent edit can add a reference while unlink awaits.
   db.prepare('DELETE FROM media WHERE id=?').run(id);
   try{await unlink(mediaPath(dir,item));}catch(error){if(error.code!=='ENOENT')throw error;}

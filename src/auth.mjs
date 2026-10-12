@@ -21,14 +21,15 @@ export async function verifyPassword(password, encoded) {
   const actual = await scrypt(password, salt, 64, { N:legacy?16384:32768, r:8, p:legacy?1:3,maxmem:64*1024*1024 });
   return timingSafeEqual(actual, Buffer.from(expected,'hex'));
 }
-export async function createUser(db, { email, password, role='admin' }) {
+export async function createUser(db, { email, password, role='admin',accessProfile='editor' }) {
   email = String(email).trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw new Error('ایمیل معتبر وارد کنید.');
   if (!['admin','editor'].includes(role)) throw new Error('Invalid role');
+  if(!['editor','author','designer','viewer'].includes(accessProfile))throw new Error('Invalid access profile');
   const hash = await hashPassword(password);
   const id = randomUUID();
   const now=new Date().toISOString();
-  db.prepare('INSERT INTO users(id,email,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(id,email,hash,role,now,now);
+  db.prepare('INSERT INTO users(id,email,password_hash,role,created_at,updated_at,access_profile) VALUES(?,?,?,?,?,?,?)').run(id,email,hash,role,now,now,accessProfile);
   return { id,email,role };
 }
 export function createSession(db,userId) {
@@ -42,7 +43,7 @@ export function createSession(db,userId) {
 export function getSession(db, req) {
   const token = (req.headers.cookie || '').split(';').map(part=>part.trim()).find(part=>part.startsWith('cms_session='))?.slice(12);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const row = db.prepare('SELECT s.*, u.email, u.role, u.design_access, (u.mfa_secret IS NOT NULL) AS mfa_enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
+  const row = db.prepare('SELECT s.*, u.email, u.role, u.design_access,u.access_profile, (u.mfa_secret IS NOT NULL) AS mfa_enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires_at>? AND u.active=1').get(digest(token),Date.now());
   return row ? { ...row, token } : null;
 }
 export function cookie(token,secure=false,clear=false) {
